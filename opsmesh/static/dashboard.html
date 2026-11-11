@@ -7,12 +7,18 @@
   <link rel="stylesheet" href="/ui/css/app.css">
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root">
+    <div style="padding: 40px; text-align: center; color: #9aa3b2; font-family: sans-serif;">
+      <p style="font-size: 18px;">Loading OPSMESH...</p>
+      <p style="font-size: 13px; color: #6b7280;">If this persists, press F12 and check the Console for errors.</p>
+    </div>
+  </div>
 
-  <script src="/ui/js/app.js"></script>
-  <script src="/ui/js/shell.js"></script>
+  <script src="/ui/js/app.js?v=2"></script>
+  <script src="/ui/js/shell.js?v=2"></script>
   <script>
     (async function () {
+      try {
       const ok = await OPSMESH.auth.requireAuth();
       if (!ok) return;
 
@@ -141,6 +147,16 @@
         return '<div class="stat"><div class="label">' + ui.escape(label) + "</div>" +
           '<div class="value ' + (kind || "") + '">' + ui.escape(value) + "</div>" +
           (sub ? '<div class="sub">' + ui.escape(sub) + "</div>" : "") + "</div>";
+      }
+      } catch (err) {
+        document.getElementById("root").innerHTML =
+          '<div style="padding: 40px; color: #e74c3c; font-family: sans-serif;">' +
+          '<h2 style="margin: 0 0 12px;">JavaScript Error</h2>' +
+          '<p style="font-size: 14px; word-break: break-word;">' + (err && err.message ? err.message : String(err)) + '</p>' +
+          '<p style="font-size: 12px; color: #6b7280; margin-top: 16px;">' +
+          'If this persists, clear your browser cache or try an incognito window.</p>' +
+          '</div>';
+        console.error("OPSMESH dashboard error:", err);
       }
     })();
   </script>

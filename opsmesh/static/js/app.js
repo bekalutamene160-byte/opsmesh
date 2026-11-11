@@ -73,6 +73,8 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ credential: googleCredential }),
+          cache: "no-cache",
+          credentials: "same-origin",
         }).then(function (r) {
           if (!r.ok) {
             return r.json().then(function (data) {
@@ -162,6 +164,11 @@
 
     const opts = { method, headers };
     if (body !== undefined) opts.body = JSON.stringify(body);
+    // CRITICAL: never use cached responses — always fetch fresh from the server.
+    // Without this, the browser may return a cached /api/v1/health response
+    // from when Google OAuth was configured, causing a blank page loop.
+    opts.cache = "no-cache";
+    opts.credentials = "same-origin";
 
     let resp;
     try {
