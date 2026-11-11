@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OPSMESH — Leads</title>
+  <title>OPSMESH -- Leads</title>
   <link rel="stylesheet" href="/ui/css/app.css?v=2">
 </head>
 <body>
@@ -111,7 +111,7 @@
                   "<td><code>" + ui.escape(l.id) + "</code></td>" +
                   "<td><b>" + ui.escape(l.company) + "</b></td>" +
                   "<td>" + ui.escape(l.contact_email) + "</td>" +
-                  "<td>" + ui.escape(l.industry || "—") + "</td>" +
+                  "<td>" + ui.escape(l.industry || "--") + "</td>" +
                   "<td><span class=\"badge neutral\">" + ui.escape(l.source) + "</span></td>" +
                   "<td>" + dispositionBadge(l.disposition) + "</td>" +
                   "<td>" + ui.relativeTime(l.created_at) + "</td>" +
@@ -128,10 +128,10 @@
         const from = total === 0 ? 0 : offset + 1;
         const to = Math.min(offset + limit, total);
         document.getElementById("pagination").innerHTML =
-          '<div>Showing ' + from + '–' + to + ' of ' + total + '</div>' +
+          '<div>Showing ' + from + '-' + to + ' of ' + total + '</div>' +
           '<div class="controls">' +
-            '<button class="btn small" id="prev-btn" ' + (offset === 0 ? "disabled" : "") + '>← Prev</button>' +
-            '<button class="btn small" id="next-btn" ' + (offset + limit >= total ? "disabled" : "") + '>Next →</button>' +
+            '<button class="btn small" id="prev-btn" ' + (offset === 0 ? "disabled" : "") + '><- Prev</button>' +
+            '<button class="btn small" id="next-btn" ' + (offset + limit >= total ? "disabled" : "") + '>Next -></button>' +
           "</div>";
         const prev = document.getElementById("prev-btn");
         const next = document.getElementById("next-btn");
@@ -146,7 +146,7 @@
           stopped: "neutral", needs_review: "warning", approval_expired: "neutral", failed: "danger",
         };
         const kind = map[d] || "neutral";
-        return '<span class="badge ' + kind + '">' + ui.escape(d || "—") + "</span>";
+        return '<span class="badge ' + kind + '">' + ui.escape(d || "--") + "</span>";
       }
 
       await loadLeads();

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OPSMESH — Runs</title>
+  <title>OPSMESH -- Runs</title>
   <link rel="stylesheet" href="/ui/css/app.css?v=2">
 </head>
 <body>
@@ -31,7 +31,7 @@
         document.getElementById("root").innerHTML = OPSMESH.renderShell("runs", "" +
           '<div class="page-header">' +
             '<h1>Runs</h1>' +
-            '<div class="meta" id="count">—</div>' +
+            '<div class="meta" id="count">--</div>' +
           "</div>" +
           '<div class="card">' +
             '<div class="form-row" style="margin-bottom: 12px;">' +
@@ -103,8 +103,8 @@
                     "<td>" + ui.relativeTime(r.started_at) + "</td>" +
                     "<td>" + ui.relativeTime(r.updated_at) + "</td>" +
                     "<td>$" + (r.cost_usd || 0).toFixed(6) + "</td>" +
-                    "<td>" + (r.pending_approval_id ? '<a href="/ui/approvals.html?id=' + encodeURIComponent(r.pending_approval_id) + '"><code>' + ui.escape(r.pending_approval_id) + "</code></a>" : "—") + "</td>" +
-                    "<td>" + (r.last_error ? '<span style="color: var(--danger);">' + ui.escape(r.last_error.slice(0, 60)) + "…</span>" : "—") + "</td>" +
+                    "<td>" + (r.pending_approval_id ? '<a href="/ui/approvals.html?id=' + encodeURIComponent(r.pending_approval_id) + '"><code>' + ui.escape(r.pending_approval_id) + "</code></a>" : "--") + "</td>" +
+                    "<td>" + (r.last_error ? '<span style="color: var(--danger);">' + ui.escape(r.last_error.slice(0, 60)) + "...</span>" : "--") + "</td>" +
                     "</tr>";
                 }).join("") + "</tbody></table></div>";
             }
@@ -118,10 +118,10 @@
           const from = totalCount === 0 ? 0 : offset + 1;
           const to = Math.min(offset + limit, totalCount);
           document.getElementById("pagination").innerHTML =
-            '<div>Showing ' + from + '–' + to + ' of ' + totalCount + '</div>' +
+            '<div>Showing ' + from + '-' + to + ' of ' + totalCount + '</div>' +
             '<div class="controls">' +
-              '<button class="btn small" id="prev-btn" ' + (offset === 0 ? "disabled" : "") + '>← Prev</button>' +
-              '<button class="btn small" id="next-btn" ' + (offset + limit >= totalCount ? "disabled" : "") + '>Next →</button>' +
+              '<button class="btn small" id="prev-btn" ' + (offset === 0 ? "disabled" : "") + '><- Prev</button>' +
+              '<button class="btn small" id="next-btn" ' + (offset + limit >= totalCount ? "disabled" : "") + '>Next -></button>' +
             "</div>";
           const prev = document.getElementById("prev-btn");
           const next = document.getElementById("next-btn");
@@ -136,7 +136,7 @@
         document.getElementById("root").innerHTML = OPSMESH.renderShell("runs", "" +
           '<div class="page-header">' +
             '<h1>Run <code>' + ui.escape(runId) + '</code></h1>' +
-            '<a href="/ui/runs.html" class="btn">← Back to list</a>' +
+            '<a href="/ui/runs.html" class="btn"><- Back to list</a>' +
           "</div>" +
           '<div id="detail"></div>' +
           '<div id="timeline"></div>'
@@ -171,7 +171,7 @@
               row("Version", run.version) +
               row("Started", ui.formatDate(run.started_at)) +
               row("Updated", ui.formatDate(run.updated_at)) +
-              row("Terminal at", run.terminal_at ? ui.formatDate(run.terminal_at) : "—") +
+              row("Terminal at", run.terminal_at ? ui.formatDate(run.terminal_at) : "--") +
               row("Is terminal", run.is_terminal ? '<span class="badge success">yes</span>' : '<span class="badge neutral">no</span>') +
               row("Is paused", run.is_paused ? '<span class="badge warning">yes</span>' : '<span class="badge neutral">no</span>') +
             "</table></div>" +

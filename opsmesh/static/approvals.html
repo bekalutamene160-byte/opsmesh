@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OPSMESH — Approval</title>
+  <title>OPSMESH -- Approval</title>
   <link rel="stylesheet" href="/ui/css/app.css?v=2">
   <style>
     .email-preview {
@@ -108,7 +108,7 @@
 
       async function renderList() {
         document.getElementById("root").innerHTML = OPSMESH.renderShell("approvals", "" +
-          '<div class="page-header"><h1>Approvals</h1><div class="meta" id="count">—</div></div>' +
+          '<div class="page-header"><h1>Approvals</h1><div class="meta" id="count">--</div></div>' +
           '<div class="card"><h2>Pending approvals</h2><div id="approvals-table"></div></div>'
         );
         OPSMESH.attachShellHandlers();
@@ -144,7 +144,7 @@
       async function renderDetail(approvalId) {
         document.getElementById("root").innerHTML = OPSMESH.renderShell("approvals", "" +
           '<div class="page-header"><h1>Approval</h1>' +
-          '<a href="/ui/approvals.html" class="btn">← Back</a></div>' +
+          '<a href="/ui/approvals.html" class="btn"><- Back</a></div>' +
           '<div id="detail"></div>'
         );
         OPSMESH.attachShellHandlers();
@@ -178,8 +178,8 @@
       function renderApprovalDetail(a, run) {
         const isGate2 = a.kind === "email_send";
         const gateLabel = isGate2
-          ? '<span class="badge warning">Gate 2 — Email Send Approval</span>'
-          : '<span class="badge info">Gate 1 — Evidence Review</span>';
+          ? '<span class="badge warning">Gate 2 -- Email Send Approval</span>'
+          : '<span class="badge info">Gate 1 -- Evidence Review</span>';
 
         let html = '' +
           '<div class="card">' +
@@ -257,7 +257,7 @@
             decision: decision,
             feedback: feedback,
           });
-          ui.toast("Decision: " + result.decision + " → " + result.status, "success");
+          ui.toast("Decision: " + result.decision + " -> " + result.status, "success");
           setTimeout(function () { window.location.href = "/ui/approvals.html"; }, 1000);
         } catch (e) {
           ui.toast("Failed: " + e.message, "danger");
