@@ -1,0 +1,33 @@
+# .dockerignore — prevents these files from entering the Docker image.
+# CRITICAL: prevents .env, secrets, venv, caches from being copied.
+
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+__pycache__/
+*/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*/.pytest_cache/
+*.egg-info/
+build/
+dist/
+opsmesh.db
+*.db
+*.sqlite
+*.sqlite3
+logs/
+traces/
+captured_emails/
+eval_results.jsonl
+*.log
+README*.md
+docs/
+tests/
+Makefile

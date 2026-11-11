@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OPSMESH — Evidence-aware B2B lead operations</title>
+  <meta name="description" content="AI agent for B2B lead outreach. Researches, qualifies, drafts, and sends — with human approval at every gate.">
+  <link rel="stylesheet" href="/ui/css/app.css">
+  <style>
+    /* Landing page specific styles */
+    .hero {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 80px 24px 60px;
+      text-align: center;
+    }
+    .hero h1 {
+      font-size: 42px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 0 0 16px;
+      line-height: 1.15;
+    }
+    .hero h1 .accent { color: var(--accent); }
+    .hero .subtitle {
+      font-size: 18px;
+      color: var(--text-dim);
+      margin: 0 0 32px;
+      line-height: 1.5;
+    }
+    .hero .cta {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .hero .cta .btn { padding: 12px 24px; font-size: 15px; }
+
+    .features {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+    }
+    .feature {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+    }
+    .feature .icon {
+      font-size: 24px;
+      margin-bottom: 12px;
+    }
+    .feature h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0 0 8px;
+    }
+    .feature p {
+      font-size: 13px;
+      color: var(--text-dim);
+      margin: 0;
+      line-height: 1.6;
+    }
+
+    .workflow {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 0 24px 80px;
+    }
+    .workflow h2 {
+      text-align: center;
+      font-size: 28px;
+      font-weight: 600;
+      margin: 0 0 40px;
+    }
+    .workflow-steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 16px;
+    }
+    .workflow-step {
+      text-align: center;
+      padding: 16px;
+    }
+    .workflow-step .num {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      margin: 0 auto 12px;
+      font-size: 14px;
+    }
+    .workflow-step .label {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+    .workflow-step .desc {
+      font-size: 12px;
+      color: var(--text-mute);
+    }
+
+    .footer {
+      text-align: center;
+      padding: 40px 24px;
+      border-top: 1px solid var(--border);
+      color: var(--text-mute);
+      font-size: 13px;
+    }
+    .footer a { color: var(--text-dim); }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <h1><span class="accent">●</span> OPSMESH</h1>
+    <p class="subtitle">
+      Evidence-aware, human-supervised B2B lead operations.
+      <br>AI researches, qualifies, drafts, and sends — <b>you approve at every gate.</b>
+    </p>
+    <div class="cta">
+      <a href="/ui/login.html" class="btn primary">Get started →</a>
+      <a href="/docs" class="btn">API docs</a>
+    </div>
+  </div>
+
+  <div class="features">
+    <div class="feature">
+      <div class="icon">🛡️</div>
+      <h3>Two-gate approval</h3>
+      <p>Every email is reviewed twice: once for evidence sufficiency (Gate 1), once before sending (Gate 2). Nothing goes out without your sign-off.</p>
+    </div>
+    <div class="feature">
+      <div class="icon">🔍</div>
+      <h3>Grounded in evidence</h3>
+      <p>The AI researches each lead with real web search (Exa) + LLM (Groq GPT-OSS 120B). Every claim in the email must cite evidence — the Critic verifies it.</p>
+    </div>
+    <div class="feature">
+      <div class="icon">⚡</div>
+      <h3>Crash-proof</h3>
+      <p>Runs are persisted to Postgres at every step. If the server crashes mid-run, it resumes exactly where it left off — no duplicate sends, no lost work.</p>
+    </div>
+    <div class="feature">
+      <div class="icon">📊</div>
+      <h3>Full observability</h3>
+      <p>16-state state machine, structured JSON logging, 8 ops metrics, audit trail. You always know what happened, when, and why.</p>
+    </div>
+    <div class="feature">
+      <div class="icon">🔌</div>
+      <h3>Real integrations</h3>
+      <p>Groq for LLM, Exa for research, Resend for email, HubSpot for CRM. All configurable via env vars — swap providers without touching code.</p>
+    </div>
+    <div class="feature">
+      <div class="icon">🔒</div>
+      <h3>Secure by default</h3>
+      <p>Google OAuth, workspace isolation, HMAC webhooks, payload-hash approval binding, email kill switch. Security is baked in, not bolted on.</p>
+    </div>
+  </div>
+
+  <div class="workflow">
+    <h2>How it works</h2>
+    <div class="workflow-steps">
+      <div class="workflow-step">
+        <div class="num">1</div>
+        <div class="label">Lead intake</div>
+        <div class="desc">Manual, webhook, or Tally form</div>
+      </div>
+      <div class="workflow-step">
+        <div class="num">2</div>
+        <div class="label">Research</div>
+        <div class="desc">Web search + LLM synthesis</div>
+      </div>
+      <div class="workflow-step">
+        <div class="num">3</div>
+        <div class="label">Qualify</div>
+        <div class="desc">Score + decision</div>
+      </div>
+      <div class="workflow-step">
+        <div class="num">4</div>
+        <div class="label">Draft</div>
+        <div class="desc">Grounded email</div>
+      </div>
+      <div class="workflow-step">
+        <div class="num">5</div>
+        <div class="label">Critic</div>
+        <div class="desc">Verify claims + tone</div>
+      </div>
+      <div class="workflow-step">
+        <div class="num">6</div>
+        <div class="label">Approve</div>
+        <div class="desc">Human review (Gate 2)</div>
+      </div>
+      <div class="workflow-step">
+        <div class="num">7</div>
+        <div class="label">Send</div>
+        <div class="desc">Resend + CRM sync</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    OPSMESH — built with FastAPI, Groq, Exa, Resend, and HubSpot.
+    <br>
+    <a href="/ui/login.html">Sign in</a> · <a href="/api/v1/health">API health</a> · <a href="/docs">API docs</a>
+  </div>
+
+  <script>
+    // If the user already has a session token, redirect to dashboard
+    (async function () {
+      try {
+        const token = localStorage.getItem("opsmesh_token");
+        if (token) {
+          // Verify the token is still valid
+          const r = await fetch("/api/v1/health", {
+            headers: { "Authorization": "Bearer " + token }
+          });
+          if (r.ok) {
+            const health = await r.json();
+            if (health.auth && health.auth.mode === "dev") {
+              window.location.href = "/ui/dashboard.html";
+            }
+            // In production mode, we'd verify the JWT here.
+            // For now, just redirect if a token exists.
+          }
+        }
+      } catch (e) {
+        // Ignore — stay on landing page
+      }
+    })();
+  </script>
+</body>
+</html>

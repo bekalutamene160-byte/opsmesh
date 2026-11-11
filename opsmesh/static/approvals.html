@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OPSMESH — Approval</title>
+  <link rel="stylesheet" href="/ui/css/app.css">
+  <style>
+    .email-preview {
+      background: #fff;
+      color: #1a1a1a;
+      border-radius: 8px;
+      padding: 24px;
+      margin: 16px 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      line-height: 1.6;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    .email-preview .email-header {
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+    }
+    .email-preview .email-from,
+    .email-preview .email-to,
+    .email-preview .email-subject {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
+    .email-preview .email-from .label,
+    .email-preview .email-to .label,
+    .email-preview .email-subject .label {
+      color: #666;
+      min-width: 60px;
+    }
+    .email-preview .email-subject {
+      font-weight: 600;
+      font-size: 15px;
+    }
+    .email-preview .email-body {
+      white-space: pre-wrap;
+      font-size: 14px;
+      color: #333;
+    }
+    .decision-bar {
+      position: sticky;
+      bottom: 0;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 16px;
+      margin: 16px -16px -16px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .research-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px;
+      margin: 12px 0;
+    }
+    .research-card h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      color: var(--text-mute);
+      margin: 0 0 8px;
+      letter-spacing: 0.05em;
+    }
+    .research-card p {
+      margin: 0;
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+    .qual-score {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="/ui/js/app.js"></script>
+  <script src="/ui/js/shell.js"></script>
+  <script>
+    (async function () {
+      const ok = await OPSMESH.auth.requireAuth();
+      if (!ok) return;
+
+      const ui = OPSMESH.ui;
+      const api = OPSMESH.api;
+      const params = new URLSearchParams(window.location.search);
+      const approvalId = params.get("id");
+
+      if (approvalId) {
+        await renderDetail(approvalId);
+      } else {
+        await renderList();
+      }
+
+      async function renderList() {
+        document.getElementById("root").innerHTML = OPSMESH.renderShell("approvals", "" +
+          '<div class="page-header"><h1>Approvals</h1><div class="meta" id="count">—</div></div>' +
+          '<div class="card"><h2>Pending approvals</h2><div id="approvals-table"></div></div>'
+        );
+        OPSMESH.attachShellHandlers();
+
+        ui.showLoading("#approvals-table");
+        try {
+          const data = await api.get("/api/v1/approvals");
+          const approvals = data.approvals || [];
+          document.getElementById("count").textContent = approvals.length + " pending";
+          if (approvals.length === 0) {
+            ui.showEmpty("#approvals-table", "No pending approvals",
+              "Runs that pause at Gate 1 or Gate 2 will appear here.");
+          } else {
+            document.getElementById("approvals-table").innerHTML =
+              '<div class="table-wrap"><table>' +
+              "<thead><tr><th>Approval</th><th>Run</th><th>Gate</th><th>Status</th><th>Created</th></tr></thead>" +
+              "<tbody>" + approvals.map(function (a) {
+                return "<tr onclick=\"window.location.href='/ui/approvals.html?id=" + encodeURIComponent(a.id) + "'\">" +
+                  "<td><code>" + ui.escape(a.id) + "</code></td>" +
+                  "<td><a href=\"/ui/runs.html?id=" + encodeURIComponent(a.run_id) + '"><code>' + ui.escape(a.run_id) + "</code></a></td>" +
+                  "<td>" + (a.kind === "email_send"
+                    ? '<span class="badge warning">Gate 2: Email Send</span>'
+                    : '<span class="badge info">Gate 1: Evidence Review</span>') + "</td>" +
+                  "<td>" + statusBadge(a.status) + "</td>" +
+                  "<td>" + ui.relativeTime(a.created_at) + "</td></tr>";
+              }).join("") + "</tbody></table></div>";
+          }
+        } catch (e) {
+          ui.showError("#approvals-table", e.message);
+        }
+      }
+
+      async function renderDetail(approvalId) {
+        document.getElementById("root").innerHTML = OPSMESH.renderShell("approvals", "" +
+          '<div class="page-header"><h1>Approval</h1>' +
+          '<a href="/ui/approvals.html" class="btn">← Back</a></div>' +
+          '<div id="detail"></div>'
+        );
+        OPSMESH.attachShellHandlers();
+
+        try {
+          const a = await api.get("/api/v1/approvals/" + encodeURIComponent(approvalId));
+
+          // Also load the run to get the draft + research
+          let run = null;
+          try {
+            run = await api.get("/api/v1/runs/" + encodeURIComponent(a.run_id));
+          } catch (e) { /* run might not be accessible */ }
+
+          document.getElementById("detail").innerHTML = renderApprovalDetail(a, run);
+
+          // Wire up decision buttons
+          if (a.status === "pending") {
+            const decisions = decisionsForKind(a.kind);
+            decisions.forEach(function (d) {
+              const btn = document.getElementById("btn-" + d.value);
+              if (btn) btn.addEventListener("click", function () {
+                submitDecision(approvalId, d.value);
+              });
+            });
+          }
+        } catch (e) {
+          ui.showError("#detail", e.message);
+        }
+      }
+
+      function renderApprovalDetail(a, run) {
+        const isGate2 = a.kind === "email_send";
+        const gateLabel = isGate2
+          ? '<span class="badge warning">Gate 2 — Email Send Approval</span>'
+          : '<span class="badge info">Gate 1 — Evidence Review</span>';
+
+        let html = '' +
+          '<div class="card">' +
+            '<h2>' + gateLabel + '</h2>' +
+            '<div class="table-wrap"><table>' +
+              row("Approval ID", "<code>" + ui.escape(a.id) + "</code>") +
+              row("Run ID", '<a href="/ui/runs.html?id=' + encodeURIComponent(a.run_id) + '"><code>' + ui.escape(a.run_id) + "</code></a>") +
+              row("Status", statusBadge(a.status)) +
+              row("Created", ui.formatDate(a.created_at)) +
+              row("Expires", ui.formatDate(a.expires_at)) +
+              (a.decision ? row("Decision", '<span class="badge info">' + ui.escape(a.decision) + "</span>") : "") +
+              (a.decided_by ? row("Decided by", "<code>" + ui.escape(a.decided_by) + "</code>") : "") +
+            "</table></div>" +
+          "</div>";
+
+        // Show research summary
+        if (run && run.research) {
+          html += '<div class="research-card">' +
+            '<h3>Research Summary</h3>' +
+            '<p>' + ui.escape(run.research.summary || "No summary available.") + '</p>' +
+            '</div>';
+        }
+
+        // Show qualification
+        if (run && run.qualification) {
+          const score = run.qualification.score || 0;
+          const scoreCls = score >= 0.7 ? "success" : score >= 0.4 ? "warning" : "danger";
+          html += '<div class="research-card">' +
+            '<h3>Qualification</h3>' +
+            '<p><span class="qual-score badge ' + scoreCls + '">Score: ' + (score * 100).toFixed(0) + '%</span> ' +
+            ui.escape(run.qualification.reasoning || "") + '</p>' +
+            '</div>';
+        }
+
+        // Show the drafted email (Gate 2)
+        if (isGate2 && run && run.draft) {
+          html += '<div class="card">' +
+            '<h2>Drafted Email</h2>' +
+            '<div class="email-preview">' +
+              '<div class="email-header">' +
+                '<div class="email-from"><span class="label">From:</span> <span>OPSMESH</span></div>' +
+                '<div class="email-to"><span class="label">To:</span> <span>' + ui.escape(run.draft.recipient) + '</span></div>' +
+                '<div class="email-subject"><span class="label">Subject:</span> <span>' + ui.escape(run.draft.subject) + '</span></div>' +
+              '</div>' +
+              '<div class="email-body">' + ui.escape(run.draft.body) + '</div>' +
+            '</div>' +
+          '</div>';
+        }
+
+        // Decision buttons
+        if (a.status === "pending") {
+          const decisions = decisionsForKind(a.kind);
+          html += '<div class="card">' +
+            '<h2>Decision</h2>' +
+            '<div style="display: flex; gap: 12px; flex-wrap: wrap;">' +
+            decisions.map(function (d) {
+              return '<button id="btn-' + d.value + '" class="btn ' + d.cls + '" style="padding: 12px 24px; font-size: 15px;">' +
+                '<b>' + ui.escape(d.label) + '</b></button>';
+            }).join("") +
+            '</div>' +
+            '<div class="form-group" style="margin-top: 16px;">' +
+              '<label>Feedback (optional)</label>' +
+              '<textarea id="feedback" rows="2" placeholder="Optional context for this decision..." style="background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px;"></textarea>' +
+            '</div>' +
+          '</div>';
+        }
+
+        return html;
+      }
+
+      async function submitDecision(approvalId, decision) {
+        const feedback = (document.getElementById("feedback") || {}).value || null;
+        try {
+          const result = await api.post("/api/v1/approvals/" + encodeURIComponent(approvalId) + "/decision", {
+            decision: decision,
+            feedback: feedback,
+          });
+          ui.toast("Decision: " + result.decision + " → " + result.status, "success");
+          setTimeout(function () { window.location.href = "/ui/approvals.html"; }, 1000);
+        } catch (e) {
+          ui.toast("Failed: " + e.message, "danger");
+        }
+      }
+
+      function statusBadge(s) {
+        const map = {
+          pending: "warning", approved: "success", rejected: "danger",
+          request_changes: "info", superseded: "neutral", expired: "neutral", consumed: "neutral",
+        };
+        return '<span class="badge ' + (map[s] || "neutral") + '">' + ui.escape(s) + "</span>";
+      }
+
+      function decisionsForKind(kind) {
+        if (kind === "evidence_review") {
+          return [
+            { value: "proceed_with_limitations", label: "Proceed", cls: "success" },
+            { value: "request_more_info", label: "Request More Info", cls: "warning" },
+            { value: "stop", label: "Stop", cls: "danger" },
+          ];
+        }
+        return [
+          { value: "approve", label: "Approve & Send", cls: "success" },
+          { value: "reject", label: "Reject", cls: "danger" },
+          { value: "request_changes", label: "Request Changes", cls: "warning" },
+        ];
+      }
+
+      function row(k, v) {
+        return "<tr><td>" + ui.escape(k) + "</td><td>" + v + "</td></tr>";
+      }
+    })();
+  </script>
+</body>
+</html>

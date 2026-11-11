@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OPSMESH — Runs</title>
+  <link rel="stylesheet" href="/ui/css/app.css">
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="/ui/js/app.js"></script>
+  <script src="/ui/js/shell.js"></script>
+  <script>
+    (async function () {
+      const ok = await OPSMESH.auth.requireAuth();
+      if (!ok) return;
+
+      const ui = OPSMESH.ui;
+      const api = OPSMESH.api;
+      const params = new URLSearchParams(window.location.search);
+      const detailId = params.get("id");
+
+      if (detailId) {
+        await renderDetail(detailId);
+      } else {
+        await renderList();
+      }
+
+      async function renderList() {
+        document.getElementById("root").innerHTML = OPSMESH.renderShell("runs", "" +
+          '<div class="page-header">' +
+            '<h1>Runs</h1>' +
+            '<div class="meta" id="count">—</div>' +
+          "</div>" +
+          '<div class="card">' +
+            '<div class="form-row" style="margin-bottom: 12px;">' +
+              '<div class="form-group"><label>State filter</label>' +
+                '<select id="state-filter">' +
+                  '<option value="">(all states)</option>' +
+                  '<option value="new">new</option>' +
+                  '<option value="researching">researching</option>' +
+                  '<option value="awaiting_evidence_review">awaiting_evidence_review</option>' +
+                  '<option value="evidence_provided">evidence_provided</option>' +
+                  '<option value="qualifying">qualifying</option>' +
+                  '<option value="drafting">drafting</option>' +
+                  '<option value="critic">critic</option>' +
+                  '<option value="awaiting_approval">awaiting_approval</option>' +
+                  '<option value="sending">sending</option>' +
+                  '<option value="send_unknown">send_unknown</option>' +
+                  '<option value="crm_updating">crm_updating</option>' +
+                  '<option value="sent">sent</option>' +
+                  '<option value="rejected">rejected</option>' +
+                  '<option value="failed">failed</option>' +
+                  '<option value="stopped_by_user">stopped_by_user</option>' +
+                  '<option value="approval_expired">approval_expired</option>' +
+                "</select>" +
+              "</div>" +
+              '<div class="form-group"><label>Page size</label>' +
+                '<select id="limit-filter">' +
+                  '<option value="20">20</option>' +
+                  '<option value="50">50</option>' +
+                  '<option value="100">100</option>' +
+                "</select>" +
+              "</div>" +
+            "</div>" +
+            '<div id="runs-table"></div>' +
+            '<div id="pagination" class="pagination"></div>' +
+          "</div>"
+        );
+        OPSMESH.attachShellHandlers();
+
+        let limit = 20;
+        let offset = 0;
+
+        document.getElementById("state-filter").addEventListener("change", function () {
+          offset = 0; loadRuns();
+        });
+        document.getElementById("limit-filter").addEventListener("change", function () {
+          limit = parseInt(document.getElementById("limit-filter").value, 10);
+          offset = 0; loadRuns();
+        });
+
+        async function loadRuns() {
+          ui.showLoading("#runs-table");
+          const state = document.getElementById("state-filter").value;
+          try {
+            const data = await api.get("/api/v1/runs", { state: state || undefined, limit, offset });
+            const runs = data.runs || [];
+            document.getElementById("count").textContent =
+              (data.total || 0) + " runs on this page";
+            if (runs.length === 0) {
+              ui.showEmpty("#runs-table", "No runs", state ? "No runs in this state." : "Create a lead to start a run.");
+            } else {
+              document.getElementById("runs-table").innerHTML =
+                '<div class="table-wrap"><table>' +
+                "<thead><tr><th>Run</th><th>Lead</th><th>State</th><th>Started</th><th>Updated</th><th>Cost</th><th>Approval</th><th>Error</th></tr></thead>" +
+                "<tbody>" + runs.map(function (r) {
+                  return "<tr onclick=\"window.location.href='/ui/runs.html?id=" + encodeURIComponent(r.run_id) + "'\">" +
+                    "<td><code>" + ui.escape(r.run_id) + "</code></td>" +
+                    "<td><code>" + ui.escape(r.lead_id) + "</code></td>" +
+                    "<td>" + ui.stateBadge(r.state) + "</td>" +
+                    "<td>" + ui.relativeTime(r.started_at) + "</td>" +
+                    "<td>" + ui.relativeTime(r.updated_at) + "</td>" +
+                    "<td>$" + (r.cost_usd || 0).toFixed(6) + "</td>" +
+                    "<td>" + (r.pending_approval_id ? '<a href="/ui/approvals.html?id=' + encodeURIComponent(r.pending_approval_id) + '"><code>' + ui.escape(r.pending_approval_id) + "</code></a>" : "—") + "</td>" +
+                    "<td>" + (r.last_error ? '<span style="color: var(--danger);">' + ui.escape(r.last_error.slice(0, 60)) + "…</span>" : "—") + "</td>" +
+                    "</tr>";
+                }).join("") + "</tbody></table></div>";
+            }
+            renderPagination(data.total || 0);
+          } catch (e) {
+            ui.showError("#runs-table", e.message);
+          }
+        }
+
+        function renderPagination(totalCount) {
+          const from = totalCount === 0 ? 0 : offset + 1;
+          const to = Math.min(offset + limit, totalCount);
+          document.getElementById("pagination").innerHTML =
+            '<div>Showing ' + from + '–' + to + ' of ' + totalCount + '</div>' +
+            '<div class="controls">' +
+              '<button class="btn small" id="prev-btn" ' + (offset === 0 ? "disabled" : "") + '>← Prev</button>' +
+              '<button class="btn small" id="next-btn" ' + (offset + limit >= totalCount ? "disabled" : "") + '>Next →</button>' +
+            "</div>";
+          const prev = document.getElementById("prev-btn");
+          const next = document.getElementById("next-btn");
+          if (prev) prev.addEventListener("click", function () { offset = Math.max(0, offset - limit); loadRuns(); });
+          if (next) next.addEventListener("click", function () { offset += limit; loadRuns(); });
+        }
+
+        await loadRuns();
+      }
+
+      async function renderDetail(runId) {
+        document.getElementById("root").innerHTML = OPSMESH.renderShell("runs", "" +
+          '<div class="page-header">' +
+            '<h1>Run <code>' + ui.escape(runId) + '</code></h1>' +
+            '<a href="/ui/runs.html" class="btn">← Back to list</a>' +
+          "</div>" +
+          '<div id="detail"></div>' +
+          '<div id="timeline"></div>'
+        );
+        OPSMESH.attachShellHandlers();
+
+        ui.showLoading("#detail");
+        ui.showLoading("#timeline");
+        try {
+          const run = await api.get("/api/v1/runs/" + encodeURIComponent(runId));
+          document.getElementById("detail").innerHTML = renderRunDetail(run);
+
+          const tl = await api.get("/api/v1/runs/" + encodeURIComponent(runId) + "/timeline");
+          document.getElementById("timeline").innerHTML = renderTimeline(tl);
+        } catch (e) {
+          ui.showError("#detail", e.message);
+          ui.showError("#timeline", e.message);
+        }
+      }
+
+      function renderRunDetail(run) {
+        const b = run.budget || {};
+        return '' +
+          '<div class="card">' +
+            '<h2>State & identity</h2>' +
+            '<div class="table-wrap"><table>' +
+              row("Run ID", "<code>" + ui.escape(run.run_id) + "</code>") +
+              row("Workspace", "<code>" + ui.escape(run.workspace_id) + "</code>") +
+              row("Lead ID", "<a href=\"/ui/leads.html\"><code>" + ui.escape(run.lead_id) + "</code></a>") +
+              row("State", ui.stateBadge(run.state)) +
+              row("Step ID", run.step_id) +
+              row("Version", run.version) +
+              row("Started", ui.formatDate(run.started_at)) +
+              row("Updated", ui.formatDate(run.updated_at)) +
+              row("Terminal at", run.terminal_at ? ui.formatDate(run.terminal_at) : "—") +
+              row("Is terminal", run.is_terminal ? '<span class="badge success">yes</span>' : '<span class="badge neutral">no</span>') +
+              row("Is paused", run.is_paused ? '<span class="badge warning">yes</span>' : '<span class="badge neutral">no</span>') +
+            "</table></div>" +
+          "</div>" +
+
+          '<div class="card">' +
+            '<h2>Budget</h2>' +
+            '<div class="stat-grid">' +
+              stat("Tokens", (b.tokens_used || 0) + " / " + (b.max_tokens || 0)) +
+              stat("Cost", "$" + (b.cost_usd || 0).toFixed(6) + " / $" + (b.max_cost_usd || 0).toFixed(4)) +
+              stat("Tool calls", (b.tool_calls || 0) + " / " + (b.max_tool_calls || 0)) +
+            "</div>" +
+          "</div>" +
+
+          (run.pending_approval_id ?
+            '<div class="card"><h2>Pending approval</h2>' +
+              '<p>This run is paused waiting on approval ' +
+              '<a href="/ui/approvals.html?id=' + encodeURIComponent(run.pending_approval_id) + '"><code>' + ui.escape(run.pending_approval_id) + "</code></a>.</p></div>"
+            : "") +
+
+          (run.draft ?
+            '<div class="card"><h2>Drafted email</h2>' +
+              '<div class="form-group"><label>Subject</label><input type="text" value="' + ui.escape(run.draft.subject) + '" readonly></div>' +
+              '<div class="form-group"><label>Recipient</label><input type="text" value="' + ui.escape(run.draft.recipient) + '" readonly></div>' +
+              '<div class="form-group"><label>Body</label><textarea rows="10" readonly>' + ui.escape(run.draft.body) + '</textarea></div>' +
+            "</div>"
+            : "") +
+
+          (run.research ?
+            '<div class="card"><h2>Research</h2>' +
+              '<p style="color: var(--text-dim);">' + ui.escape(run.research.summary || "") + "</p>" +
+              "<p><b>Sufficient:</b> " + (run.research.sufficient_for_qualification ? "yes" : "no") + "</p>" +
+              (run.research.missing_info && run.research.missing_info.length ?
+                "<p><b>Missing:</b> " + run.research.missing_info.map(ui.escape).join(", ") + "</p>" : "") +
+            "</div>"
+            : "") +
+
+          (run.qualification ?
+            '<div class="card"><h2>Qualification</h2>' +
+              "<p><b>Status:</b> " + ui.stateBadge(run.qualification.status.toLowerCase()) + "</p>" +
+              "<p><b>Score:</b> " + (run.qualification.score || 0).toFixed(2) + "</p>" +
+              "<p style=\"color: var(--text-dim);\">" + ui.escape(run.qualification.reasoning || "") + "</p>" +
+            "</div>"
+            : "") +
+
+          (run.critic_feedback ?
+            '<div class="card"><h2>Critic feedback</h2><p>' + ui.escape(run.critic_feedback) + "</p></div>"
+            : "") +
+
+          (run.last_error ?
+            '<div class="card"><h2 style="color: var(--danger);">Last error</h2><pre class="json">' + ui.escape(run.last_error) + "</pre></div>"
+            : "");
+      }
+
+      function renderTimeline(tl) {
+        const events = tl.events || [];
+        return '' +
+          '<div class="card">' +
+            '<h2>Timeline (' + events.length + ' events)</h2>' +
+            (events.length === 0 ? '<div class="empty">No events.</div>' :
+              '<ul class="timeline">' + events.map(function (ev) {
+                return '<li>' +
+                  '<div class="ts">' + ui.escape(ev.timestamp) + "</div>" +
+                  '<div class="body">' +
+                    '<div class="event">' + ui.escape(ev.event) + " " +
+                      '<span class="badge neutral" style="margin-left: 6px;">' + ui.escape(ev.state) + "</span>" +
+                    "</div>" +
+                    '<div class="detail">' + ui.escape(ev.detail) + "</div>" +
+                  "</div>" +
+                "</li>";
+              }).join("") + "</ul>") +
+          "</div>";
+      }
+
+      function row(k, v) {
+        return "<tr><td>" + ui.escape(k) + "</td><td>" + v + "</td></tr>";
+      }
+      function stat(label, value) {
+        return '<div class="stat"><div class="label">' + ui.escape(label) + "</div>" +
+          '<div class="value">' + ui.escape(value) + "</div></div>";
+      }
+    })();
+  </script>
+</body>
+</html>

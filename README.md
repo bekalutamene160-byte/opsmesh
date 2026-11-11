@@ -100,7 +100,7 @@ opsmesh/
 
 ```bash
 # Clone
-git clone https://github.com/bekalutamene160-byte/opsmesh.git
+git clone https://github.com/yourusername/opsmesh.git
 cd opsmesh
 
 # Create venv + install deps
@@ -225,5 +225,3 @@ See `render.yaml` for the full blueprint.
 ## License
 
 MIT
-#   o p s m e s h  
- 

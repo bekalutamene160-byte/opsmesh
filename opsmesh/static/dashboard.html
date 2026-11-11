@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OPSMESH — Overview</title>
+  <link rel="stylesheet" href="/ui/css/app.css">
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="/ui/js/app.js"></script>
+  <script src="/ui/js/shell.js"></script>
+  <script>
+    (async function () {
+      const ok = await OPSMESH.auth.requireAuth();
+      if (!ok) return;
+
+      const root = document.getElementById("root");
+      root.innerHTML = OPSMESH.renderShell("overview", "" +
+        '<div class="page-header">' +
+          '<h1>Overview</h1>' +
+          '<div class="meta" id="generated-at">—</div>' +
+        "</div>" +
+
+        '<div id="metrics" class="stat-grid"></div>' +
+
+        '<div class="card">' +
+          '<h2>Recent runs</h2>' +
+          '<div id="recent-runs"></div>' +
+        "</div>" +
+
+        '<div class="card">' +
+          '<h2>Pending approvals</h2>' +
+          '<div id="pending-approvals"></div>' +
+        "</div>" +
+
+        '<div class="card">' +
+          '<h2>Dead-letter queue</h2>' +
+          '<div id="dlq"></div>' +
+        "</div>"
+      );
+      OPSMESH.attachShellHandlers();
+
+      const ui = OPSMESH.ui;
+      const api = OPSMESH.api;
+
+      ui.showLoading("#recent-runs");
+      ui.showLoading("#pending-approvals");
+      ui.showLoading("#dlq");
+      ui.showLoading("#metrics");
+
+      try {
+        const dash = await api.get("/api/v1/dashboard");
+        const m = dash.metrics || {};
+
+        document.getElementById("generated-at").textContent =
+          "Generated " + ui.relativeTime(m.generated_at);
+
+        // Enhanced metrics with token usage
+        var successRate = m.runs ? (m.runs.success_rate * 100).toFixed(1) : "0.0";
+        var successCls = parseFloat(successRate) >= 80 ? "success" : parseFloat(successRate) >= 50 ? "warning" : "danger";
+        var costUsd = m.cost ? (m.cost.total_usd_24h || 0) : 0;
+
+        document.getElementById("metrics").innerHTML = [] +
+          stat("Runs (24h)", m.runs ? m.runs.total_24h : 0, "info") +
+          stat("Success rate", successRate + "%", successCls) +
+          stat("Cost (24h)", "$" + costUsd.toFixed(6), "warning",
+               m.runs ? m.runs.succeeded_24h + " sent / " + m.runs.failed_24h + " failed" : "") +
+          stat("p95 latency", m.runs ? (m.runs.p95_latency_ms || 0).toFixed(0) + " ms" : "0 ms", "info") +
+          stat("Queue depth", m.queue ? m.queue.depth : 0, "info") +
+          stat("DLQ depth", m.queue ? m.queue.dlq_depth : 0, "danger") +
+          stat("Pending approvals", m.approvals ? m.approvals.pending_count : 0, "warning") +
+          stat("LLM errors", m.providers && m.providers.llm
+            ? (m.providers.llm.error_rate * 100).toFixed(1) + "%"
+            : "0.0%", "info");
+
+        // Recent runs with token + cost display
+        const runs = dash.recent_runs || [];
+        if (runs.length === 0) {
+          ui.showEmpty("#recent-runs", "No runs yet",
+            "Create a lead or connect a Tally form to start.");
+        } else {
+          document.getElementById("recent-runs").innerHTML =
+            '<div class="table-wrap"><table>' +
+            "<thead><tr><th>Run</th><th>Lead</th><th>State</th><th>Cost</th><th>Updated</th><th>Error</th></tr></thead>" +
+            "<tbody>" + runs.map(function (r) {
+              return "<tr onclick=\"window.location.href='/ui/runs.html?id=" + encodeURIComponent(r.run_id) + "'\">" +
+                "<td><code>" + ui.escape(r.run_id) + "</code></td>" +
+                "<td><code>" + ui.escape(r.lead_id) + "</code></td>" +
+                "<td>" + ui.stateBadge(r.state) + "</td>" +
+                "<td>$" + (r.cost_usd || 0).toFixed(6) + "</td>" +
+                "<td>" + ui.relativeTime(r.updated_at) + "</td>" +
+                "<td>" + (r.last_error
+                  ? '<span style="color: var(--danger); font-size: 12px;">' + ui.escape(r.last_error.slice(0, 50)) + "…</span>"
+                  : '<span style="color: var(--text-mute);">—</span>") + "</td>" +
+                "</tr>";
+            }).join("") + "</tbody></table></div>";
+        }
+
+        // Pending approvals — clickable to approval detail
+        const pending = dash.pending_approvals || [];
+        if (pending.length === 0) {
+          ui.showEmpty("#pending-approvals", "No pending approvals");
+        } else {
+          document.getElementById("pending-approvals").innerHTML =
+            '<div class="table-wrap"><table>' +
+            "<thead><tr><th>Run</th><th>Lead</th><th>State</th><th>Approval</th><th>Updated</th></tr></thead>" +
+            "<tbody>" + pending.map(function (r) {
+              return "<tr onclick=\"window.location.href='/ui/approvals.html?id=" + encodeURIComponent(r.pending_approval_id) + "'\">" +
+                "<td><code>" + ui.escape(r.run_id) + "</code></td>" +
+                "<td><code>" + ui.escape(r.lead_id) + "</code></td>" +
+                "<td>" + ui.stateBadge(r.state) + "</td>" +
+                "<td><code>" + ui.escape(r.pending_approval_id) + "</code></td>" +
+                "<td>" + ui.relativeTime(r.updated_at) + "</td>" +
+                "</tr>";
+            }).join("") + "</tbody></table></div>";
+        }
+
+        // DLQ
+        const dlq = dash.dlq_items || [];
+        if (dlq.length === 0) {
+          ui.showEmpty("#dlq", "No dead-lettered jobs");
+        } else {
+          document.getElementById("dlq").innerHTML =
+            '<div class="table-wrap"><table>' +
+            "<thead><tr><th>Job</th><th>Run</th><th>Attempts</th><th>Last error</th></tr></thead>" +
+            "<tbody>" + dlq.map(function (j) {
+              return "<tr><td><code>" + ui.escape(j.job_id) + "</code></td>" +
+                "<td><code>" + ui.escape(j.run_id || "—") + "</code></td>" +
+                "<td>" + (j.attempts || 0) + "</td>" +
+                "<td>" + ui.escape(j.last_error || "—") + "</td></tr>";
+            }).join("") + "</tbody></table></div>";
+        }
+      } catch (e) {
+        ui.showError("#recent-runs", e.message);
+        ui.toast("Failed to load: " + e.message, "danger");
+      }
+
+      function stat(label, value, kind, sub) {
+        return '<div class="stat"><div class="label">' + ui.escape(label) + "</div>" +
+          '<div class="value ' + (kind || "") + '">' + ui.escape(value) + "</div>" +
+          (sub ? '<div class="sub">' + ui.escape(sub) + "</div>" : "") + "</div>";
+      }
+    })();
+  </script>
+</body>
+</html>

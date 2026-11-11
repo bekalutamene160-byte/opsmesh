@@ -1,0 +1,100 @@
+# Render deployment configuration for OPSMESH.
+# https://render.com/docs/blueprint-spec
+#
+# Deploy:
+#   1. Push this repo to GitHub
+#   2. Go to render.com → New → Blueprint
+#   3. Connect your GitHub repo
+#   4. Render reads this file and creates all services
+#   5. Set the secret env vars in the Render dashboard
+
+databases:
+  - name: opsmesh-db
+    plan: free
+    ipAllowList: []
+
+services:
+  # ---------------------------------------------------------------------------
+  # API service (web)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: opsmesh-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn opsmesh.api.app:create_app --factory --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: OPSMESH_DATABASE_URL
+        fromDatabase:
+          name: opsmesh-db
+          property: connectionString
+      - key: OPSMESH_LLM_PROVIDER
+        value: groq
+      - key: OPSMESH_LLM_API_KEY
+        sync: false
+      - key: OPSMESH_LLM_DEFAULT_MODEL
+        value: openai/gpt-oss-120b
+      - key: OPSMESH_RESEARCH_PROVIDER
+        value: exa
+      - key: OPSMESH_EXA_API_KEY
+        sync: false
+      - key: OPSMESH_EMAIL_PROVIDER
+        value: resend
+      - key: OPSMESH_EMAIL_API_KEY
+        sync: false
+      - key: OPSMESH_EMAIL_KILL_SWITCH
+        value: "false"
+      - key: OPSMESH_CRM_PROVIDER
+        value: hubspot
+      - key: OPSMESH_CRM_API_KEY
+        sync: false
+      - key: OPSMESH_WEBHOOK_SECRET
+        sync: false
+      - key: OPSMESH_SESSION_SECRET
+        sync: false
+      - key: OPSMESH_GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: OPSMESH_CORS_ALLOWED_ORIGINS
+        value: "*"  # Update with your domain after deployment
+      - key: OPSMESH_PRODUCTION_MODE
+        value: "true"
+
+  # ---------------------------------------------------------------------------
+  # Worker service (background)
+  # ---------------------------------------------------------------------------
+  - type: worker
+    name: opsmesh-worker
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m opsmesh.worker
+    autoDeploy: true
+    envVars:
+      - key: OPSMESH_DATABASE_URL
+        fromDatabase:
+          name: opsmesh-db
+          property: connectionString
+      - key: OPSMESH_LLM_PROVIDER
+        value: groq
+      - key: OPSMESH_LLM_API_KEY
+        sync: false
+      - key: OPSMESH_LLM_DEFAULT_MODEL
+        value: openai/gpt-oss-120b
+      - key: OPSMESH_RESEARCH_PROVIDER
+        value: exa
+      - key: OPSMESH_EXA_API_KEY
+        sync: false
+      - key: OPSMESH_EMAIL_PROVIDER
+        value: resend
+      - key: OPSMESH_EMAIL_API_KEY
+        sync: false
+      - key: OPSMESH_EMAIL_KILL_SWITCH
+        value: "false"
+      - key: OPSMESH_CRM_PROVIDER
+        value: hubspot
+      - key: OPSMESH_CRM_API_KEY
+        sync: false
+      - key: OPSMESH_WEBHOOK_SECRET
+        sync: false
+      - key: OPSMESH_SESSION_SECRET
+        sync: false

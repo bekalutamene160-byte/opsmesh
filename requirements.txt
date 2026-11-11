@@ -1,0 +1,41 @@
+# OPSMESH dependencies — pinned for reproducibility
+# Compatible with Python 3.11+
+
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+jinja2==3.1.5
+python-multipart==0.0.20
+itsdangerous==2.2.0
+
+# --- Validation ---
+pydantic==2.10.4
+pydantic-settings==2.7.0
+email-validator==2.2.0
+
+# --- Database ---
+asyncpg==0.32.0
+aiosqlite==0.22.1
+sqlalchemy==2.1.8
+alembic==1.14.0
+
+# --- LLM + AI ---
+google-generativeai==0.8.3
+
+# --- MCP ---
+mcp==1.0.0
+
+# --- Observability ---
+structlog==24.4.0
+opentelemetry-api==1.29.0
+opentelemetry-sdk==1.29.0
+
+# --- Auth + HTTP ---
+PyJWT==2.15.1
+cryptography>=44.0.0
+httpx==0.28.1
+
+# --- Testing ---
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0

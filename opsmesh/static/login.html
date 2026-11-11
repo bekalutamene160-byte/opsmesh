@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OPSMESH — Sign in</title>
+  <link rel="stylesheet" href="/ui/css/app.css">
+  <!-- Google Identity Services (loaded only in production mode) -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body class="login-page">
+  <div class="login-card">
+    <h1><span style="color: var(--accent);">●</span> OPSMESH</h1>
+    <div class="subtitle">Evidence-aware, human-supervised B2B lead operations.</div>
+
+    <div id="mode-pill" class="mode-pill">Checking server...</div>
+
+    <div id="dev-block" style="display: none;">
+      <div class="hint">
+        Server is in <b>dev mode</b> (Google OAuth not configured).
+        Auth is bypassed and a default workspace is used.
+      </div>
+      <div class="actions">
+        <button id="dev-enter" class="btn primary">Enter dashboard →</button>
+      </div>
+    </div>
+
+    <div id="prod-block" style="display: none;">
+      <div class="hint">
+        Sign in with your Google account to continue. You'll be redirected
+        to Google, then returned here with a session token.
+      </div>
+      <!-- Google Identity Services renders the button inside this div -->
+      <div id="google-btn" style="margin-top: 16px;"></div>
+      <div class="hint" style="margin-top: 12px;">
+        After signing in, your Google ID token is verified by the backend,
+        which issues a 7-day session JWT. The Google token is never stored.
+      </div>
+    </div>
+
+    <div id="error" style="color: var(--danger); margin-top: 12px; font-size: 13px;"></div>
+  </div>
+
+  <script src="/ui/js/app.js"></script>
+  <script>
+    (async function () {
+      const errEl = document.getElementById("error");
+      const pill = document.getElementById("mode-pill");
+
+      // If already authed (we have a session token), jump to dashboard
+      if (OPSMESH.auth.token) {
+        // Verify the token is still valid by calling /api/v1/health
+        // (this is cheap and confirms the backend is reachable)
+        try {
+          await OPSMESH.api.get("/api/v1/health");
+          window.location.href = "/ui/dashboard.html";
+          return;
+        } catch (e) {
+          // Token may be stale or backend is down. Clear and show login.
+          OPSMESH.auth.logout();
+        }
+      }
+
+      // Check server mode
+      let mode = "dev";
+      let googleClientId = "";
+      try {
+        const health = await OPSMESH.api.get("/api/v1/health");
+        mode = (health.auth && health.auth.mode) || "dev";
+        googleClientId = (health.auth && health.auth.google_oauth_configured)
+          ? ""  // We don't expose the client_id via /health (security).
+          : "";
+      } catch (e) {
+        errEl.textContent = "Cannot reach server at /api/v1/health. Is the backend running?";
+        pill.textContent = "Server unreachable";
+        pill.classList.add("production");
+        return;
+      }
+
+      if (mode === "dev") {
+        pill.textContent = "Dev mode";
+        pill.classList.remove("production");
+        document.getElementById("dev-block").style.display = "block";
+        document.getElementById("prod-block").style.display = "none";
+
+        document.getElementById("dev-enter").addEventListener("click", async function () {
+          try {
+            await OPSMESH.auth.login("");  // empty token in dev mode
+            window.location.href = "/ui/dashboard.html";
+          } catch (e) {
+            errEl.textContent = "Failed: " + e.message;
+          }
+        });
+      } else {
+        pill.textContent = "Production mode";
+        pill.classList.add("production");
+        document.getElementById("dev-block").style.display = "none";
+        document.getElementById("prod-block").style.display = "block";
+
+        // Fetch the Google OAuth client_id from the backend
+        // (it's safe to expose — it's the public client identifier)
+        try {
+          const meta = await fetch("/api/v1/auth/google/client-id").then(r => r.json());
+          if (meta && meta.client_id) {
+            renderGoogleButton(meta.client_id);
+          } else {
+            errEl.textContent = "Server didn't return a Google client_id. Check backend config.";
+          }
+        } catch (e) {
+          errEl.textContent = "Failed to fetch Google client_id: " + e.message;
+        }
+      }
+
+      // Render the Google Sign In button using Google Identity Services
+      function renderGoogleButton(clientId) {
+        if (!window.google || !window.google.accounts) {
+          // GIS script hasn't loaded yet — retry in 500ms
+          setTimeout(function () { renderGoogleButton(clientId); }, 500);
+          return;
+        }
+
+        window.google.accounts.id.initialize({
+          client_id: clientId,
+          callback: handleGoogleCredential,
+          auto_select: false,
+          cancel_on_tap_outside: false,
+        });
+
+        window.google.accounts.id.renderButton(
+          document.getElementById("google-btn"),
+          {
+            theme: "filled_blue",
+            size: "large",
+            shape: "rectangular",
+            text: "sign_in_with",
+            width: 320,
+          }
+        );
+      }
+
+      // Handle the Google credential response
+      async function handleGoogleCredential(response) {
+        const credential = response && response.credential;
+        if (!credential) {
+          errEl.textContent = "Google didn't return a credential. Please try again.";
+          return;
+        }
+        try {
+          const result = await OPSMESH.auth.loginWithGoogle(credential);
+          if (result) {
+            window.location.href = "/ui/dashboard.html";
+          }
+        } catch (e) {
+          errEl.textContent = "Google sign-in failed: " + e.message;
+        }
+      }
+    })();
+  </script>
+</body>
+</html>

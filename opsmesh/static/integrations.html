@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OPSMESH — Integrations</title>
+  <link rel="stylesheet" href="/ui/css/app.css">
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="/ui/js/app.js"></script>
+  <script src="/ui/js/shell.js"></script>
+  <script>
+    (async function () {
+      const ok = await OPSMESH.auth.requireAuth();
+      if (!ok) return;
+
+      const ui = OPSMESH.ui;
+      const api = OPSMESH.api;
+
+      document.getElementById("root").innerHTML = OPSMESH.renderShell("integrations", "" +
+        '<div class="page-header">' +
+          '<h1>Integrations</h1>' +
+          '<div class="meta" id="refreshed">—</div>' +
+        "</div>" +
+
+        '<div class="card">' +
+          '<h2>Server health</h2>' +
+          '<div id="health"></div>' +
+        "</div>" +
+
+        '<div class="card">' +
+          '<h2>Providers</h2>' +
+          '<div id="providers" class="provider-grid"></div>' +
+        "</div>"
+      );
+      OPSMESH.attachShellHandlers();
+
+      ui.showLoading("#health");
+      ui.showLoading("#providers");
+
+      try {
+        const [health, integrations] = await Promise.all([
+          api.get("/api/v1/health"),
+          api.get("/api/v1/integrations"),
+        ]);
+
+        document.getElementById("refreshed").textContent =
+          "Checked just now";
+
+        // Health card
+        document.getElementById("health").innerHTML =
+          '<div class="table-wrap"><table>' +
+            row("Status", '<span class="badge success">' + ui.escape(health.status || "ok") + "</span>") +
+            row("Store", "<code>" + ui.escape(health.store || "—") + "</code>") +
+            row("Queue", "<code>" + ui.escape(health.queue || "—") + "</code>") +
+            row("Production mode", health.production_mode ? '<span class="badge warning">true</span>' : '<span class="badge neutral">false</span>') +
+            row("Database path", "<code>" + ui.escape(health.database_path || "—") + "</code>") +
+            row("Auth mode", health.auth && health.auth.mode === "production"
+              ? '<span class="badge warning">production</span>'
+              : '<span class="badge neutral">dev</span>') +
+            row("JWT secret configured", health.auth && health.auth.jwt_secret_configured
+              ? '<span class="badge success">yes</span>'
+              : '<span class="badge neutral">no</span>') +
+            row("Email kill switch", health.email_kill_switch
+              ? '<span class="badge danger">ON (sends blocked)</span>'
+              : '<span class="badge success">OFF (sends allowed)</span>') +
+          "</table></div>";
+
+        // Provider cards
+        const providers = [];
+        if (integrations.llm) providers.push(buildProvider("LLM", integrations.llm));
+        if (integrations.research) providers.push(buildProvider("Research", integrations.research));
+        if (integrations.email) providers.push(buildProvider("Email", integrations.email));
+        if (integrations.crm) providers.push(buildProvider("CRM", integrations.crm));
+        if (integrations.database) providers.push(buildDatabase(integrations.database));
+
+        document.getElementById("providers").innerHTML = providers.join("");
+      } catch (e) {
+        ui.showError("#health", e.message);
+        ui.showError("#providers", e.message);
+      }
+
+      function buildProvider(name, p) {
+        const statusCls = p.status === "configured" ? "success" :
+                          p.status === "missing_key" ? "warning" : "neutral";
+        return '' +
+          '<div class="provider-card">' +
+            '<div class="name">' + ui.escape(name) +
+              ' <span class="badge ' + statusCls + '" style="margin-left: 8px;">' + ui.escape(p.status) + "</span>" +
+            "</div>" +
+            '<div class="row"><span class="k">Provider</span><span class="v">' + ui.escape(p.provider) + "</span></div>" +
+            '<div class="row"><span class="k">API key</span><span class="v">' +
+              (p.api_key_configured ? '<span style="color: var(--success);">configured</span>' : '<span style="color: var(--danger);">missing</span>') +
+            "</span></div>" +
+            (p.model ? '<div class="row"><span class="k">Model</span><span class="v">' + ui.escape(p.model) + "</span></div>" : "") +
+            (p.kill_switch !== undefined ? '<div class="row"><span class="k">Kill switch</span><span class="v">' +
+              (p.kill_switch ? "ON" : "OFF") + "</span></div>" : "") +
+          "</div>";
+      }
+
+      function buildDatabase(d) {
+        return '' +
+          '<div class="provider-card">' +
+            '<div class="name">Database</div>' +
+            '<div class="row"><span class="k">Type</span><span class="v">' + ui.escape(d.type) + "</span></div>" +
+            '<div class="row"><span class="k">Path</span><span class="v">' + ui.escape(d.path) + "</span></div>" +
+            '<div class="row"><span class="k">Production</span><span class="v">' +
+              (d.production_mode ? "true" : "false") + "</span></div>" +
+          "</div>";
+      }
+
+      function row(k, v) {
+        return "<tr><td>" + ui.escape(k) + "</td><td>" + v + "</td></tr>";
+      }
+    })();
+  </script>
+</body>
+</html>

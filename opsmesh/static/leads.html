@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OPSMESH — Leads</title>
+  <link rel="stylesheet" href="/ui/css/app.css">
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="/ui/js/app.js"></script>
+  <script src="/ui/js/shell.js"></script>
+  <script>
+    (async function () {
+      const ok = await OPSMESH.auth.requireAuth();
+      if (!ok) return;
+
+      const ui = OPSMESH.ui;
+      const api = OPSMESH.api;
+
+      // State
+      let limit = 20;
+      let offset = 0;
+      let total = 0;
+
+      document.getElementById("root").innerHTML = OPSMESH.renderShell("leads", "" +
+        '<div class="page-header">' +
+          '<h1>Leads</h1>' +
+          '<button id="new-btn" class="btn primary">+ New lead</button>' +
+        "</div>" +
+
+        '<div id="create-form" class="card" style="display: none;">' +
+          '<h2>Create lead</h2>' +
+          '<div class="form-row">' +
+            '<div class="form-group"><label>Company *</label><input id="f-company" type="text" placeholder="Acme Corp"></div>' +
+            '<div class="form-group"><label>Contact email *</label><input id="f-email" type="email" placeholder="founder@acme.com"></div>' +
+          "</div>" +
+          '<div class="form-row">' +
+            '<div class="form-group"><label>Contact name</label><input id="f-name" type="text"></div>' +
+            '<div class="form-group"><label>Industry</label><input id="f-industry" type="text" placeholder="Software"></div>' +
+          "</div>" +
+          '<div class="form-row">' +
+            '<div class="form-group"><label>Employees</label><input id="f-employees" type="number" min="1" max="1000000"></div>' +
+            '<div class="form-group"><label>Website</label><input id="f-website" type="text" placeholder="https://"></div>' +
+          "</div>" +
+          '<div class="card-actions">' +
+            '<button id="create-btn" class="btn primary">Create lead</button>' +
+            '<button id="cancel-btn" class="btn">Cancel</button>' +
+          "</div>" +
+        "</div>" +
+
+        '<div class="card">' +
+          '<h2>All leads</h2>' +
+          '<div id="leads-table"></div>' +
+          '<div id="pagination" class="pagination"></div>' +
+        "</div>"
+      );
+      OPSMESH.attachShellHandlers();
+
+      // Wire up form toggle
+      document.getElementById("new-btn").addEventListener("click", function () {
+        const f = document.getElementById("create-form");
+        f.style.display = f.style.display === "none" ? "block" : "none";
+      });
+      document.getElementById("cancel-btn").addEventListener("click", function () {
+        document.getElementById("create-form").style.display = "none";
+      });
+
+      document.getElementById("create-btn").addEventListener("click", async function () {
+        const body = {
+          company: document.getElementById("f-company").value.trim(),
+          contact_email: document.getElementById("f-email").value.trim(),
+          contact_name: document.getElementById("f-name").value.trim() || null,
+          industry: document.getElementById("f-industry").value.trim() || null,
+          employees: parseInt(document.getElementById("f-employees").value, 10) || null,
+          website: document.getElementById("f-website").value.trim() || null,
+        };
+        if (!body.company || !body.contact_email) {
+          ui.toast("Company and contact email are required.", "warning");
+          return;
+        }
+        try {
+          const result = await api.post("/api/v1/leads", body);
+          ui.toast("Lead created: " + result.lead_id, "success");
+          // Reset form
+          ["f-company", "f-email", "f-name", "f-industry", "f-employees", "f-website"]
+            .forEach(function (id) { document.getElementById(id).value = ""; });
+          document.getElementById("create-form").style.display = "none";
+          // Reload
+          await loadLeads();
+        } catch (e) {
+          ui.toast("Create failed: " + e.message, "danger");
+        }
+      });
+
+      async function loadLeads() {
+        ui.showLoading("#leads-table");
+        try {
+          const data = await api.get("/api/v1/leads", { limit, offset });
+          total = data.total;
+          const leads = data.leads || [];
+          if (leads.length === 0) {
+            ui.showEmpty("#leads-table", "No leads yet", "Click \"+ New lead\" to create one.");
+          } else {
+            document.getElementById("leads-table").innerHTML =
+              '<div class="table-wrap"><table>' +
+              "<thead><tr><th>Lead ID</th><th>Company</th><th>Email</th><th>Industry</th><th>Source</th><th>Disposition</th><th>Created</th></tr></thead>" +
+              "<tbody>" + leads.map(function (l) {
+                return "<tr>" +
+                  "<td><code>" + ui.escape(l.id) + "</code></td>" +
+                  "<td><b>" + ui.escape(l.company) + "</b></td>" +
+                  "<td>" + ui.escape(l.contact_email) + "</td>" +
+                  "<td>" + ui.escape(l.industry || "—") + "</td>" +
+                  "<td><span class=\"badge neutral\">" + ui.escape(l.source) + "</span></td>" +
+                  "<td>" + dispositionBadge(l.disposition) + "</td>" +
+                  "<td>" + ui.relativeTime(l.created_at) + "</td>" +
+                  "</tr>";
+              }).join("") + "</tbody></table></div>";
+          }
+          renderPagination();
+        } catch (e) {
+          ui.showError("#leads-table", e.message);
+        }
+      }
+
+      function renderPagination() {
+        const from = total === 0 ? 0 : offset + 1;
+        const to = Math.min(offset + limit, total);
+        document.getElementById("pagination").innerHTML =
+          '<div>Showing ' + from + '–' + to + ' of ' + total + '</div>' +
+          '<div class="controls">' +
+            '<button class="btn small" id="prev-btn" ' + (offset === 0 ? "disabled" : "") + '>← Prev</button>' +
+            '<button class="btn small" id="next-btn" ' + (offset + limit >= total ? "disabled" : "") + '>Next →</button>' +
+          "</div>";
+        const prev = document.getElementById("prev-btn");
+        const next = document.getElementById("next-btn");
+        if (prev) prev.addEventListener("click", function () { offset = Math.max(0, offset - limit); loadLeads(); });
+        if (next) next.addEventListener("click", function () { offset += limit; loadLeads(); });
+      }
+
+      function dispositionBadge(d) {
+        const map = {
+          new: "neutral", researching: "info", qualified: "success",
+          disqualified: "neutral", rejected: "danger", contacted: "success",
+          stopped: "neutral", needs_review: "warning", approval_expired: "neutral", failed: "danger",
+        };
+        const kind = map[d] || "neutral";
+        return '<span class="badge ' + kind + '">' + ui.escape(d || "—") + "</span>";
+      }
+
+      await loadLeads();
+    })();
+  </script>
+</body>
+</html>
