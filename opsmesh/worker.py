@@ -277,6 +277,57 @@ def _build_default_worker() -> "Worker":
     )
 
 
+def build_in_process_supervisor(settings, store, approval_gate, lead_store):
+    """Build a Supervisor for in-process worker mode.
+
+    This reuses the SHARED store, approval_gate, and lead_store from the
+    API process so that leads, runs, and approvals are visible to BOTH
+    the API endpoints and the worker's specialists.
+
+    Used when OPSMESH_WORKER_IN_PROCESS is "auto" (and the store is
+    in-memory) or "true". This avoids the need for a separate worker
+    process + Postgres database on single-service deployments (e.g., a
+    free-tier Render web service).
+
+    Args:
+        settings: the Settings singleton (already loaded).
+        store: the SHARED StateStore (InMemoryStateStore or SQLiteStateStore).
+        approval_gate: the SHARED ApprovalGate (contains the shared approval_store).
+        lead_store: the SHARED LeadStore (so specialists see leads the API created).
+
+    Returns:
+        A Supervisor ready to be passed to Worker(supervisor=...).
+    """
+    from opsmesh.adapters.provider_factory import (
+        create_llm_provider,
+        create_research_provider,
+        create_email_provider,
+        create_crm_provider,
+    )
+    from opsmesh.specialists import build_specialists
+    from opsmesh.supervisor import Supervisor
+
+    llm = create_llm_provider(settings)
+    research = create_research_provider(settings)
+    email = create_email_provider(settings)
+    crm = create_crm_provider(settings)
+
+    specialists = build_specialists(
+        llm=llm,
+        settings=settings,
+        research=research,
+        email_provider=email,
+        crm_provider=crm,
+        lead_store=lead_store,
+    )
+
+    return Supervisor(
+        specialists=specialists,
+        store=store,
+        approvals=approval_gate,
+    )
+
+
 async def _init_worker_db() -> None:
     """Initialize the DB (async — must be called from inside an event loop).
 
@@ -367,4 +418,4 @@ if __name__ == "__main__":
     asyncio.run(_main_async())
 
 
-__all__ = ["Worker", "POLL_INTERVAL_SECONDS"]
+__all__ = ["Worker", "POLL_INTERVAL_SECONDS", "build_in_process_supervisor"]

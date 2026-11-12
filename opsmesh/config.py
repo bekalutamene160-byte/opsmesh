@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     database_url: str = ""   # Postgres URL (Phase 7) — takes precedence over database_path
     production_mode: bool = False  # when True: fail closed if DB not configured
 
+    # --- In-process worker (single-service deployments) ---
+    # When the API and worker share a single process (e.g., a free-tier
+    # Render web service with no separate worker + no Postgres), the worker
+    # runs as a background asyncio task inside the API process. This shares
+    # the in-memory store/queue/lead_store/approval_store so leads created
+    # by the API are visible to the worker's specialists.
+    #   "auto"  (default): enabled when store is in-memory (no DB configured)
+    #   "true":  always enabled (even with a DB — useful for single-service prod)
+    #   "false": always disabled (use a separate `python -m opsmesh.worker` process)
+    worker_in_process: str = "auto"
+
     # --- Engineering Contract §2: Maximums ---
     max_steps: int = 15
     max_tokens_pro: int = 8000

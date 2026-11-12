@@ -22,6 +22,7 @@ Architecture:
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -46,6 +47,8 @@ from opsmesh.observability.logging import configure_logging
 from opsmesh.job_queue import InMemoryJobQueue
 from opsmesh.services.lead_intake import LeadIntakeService
 from opsmesh.state_store import InMemoryStateStore
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -153,11 +156,20 @@ def create_app(
         store = InMemoryStateStore()
         queue = InMemoryJobQueue()
 
+    # Build the SHARED lead store. This is critical: the LeadIntakeService
+    # (API side) and the in-process worker's specialists MUST use the same
+    # LeadStore instance, otherwise leads created by the API are invisible
+    # to the worker. In DB mode, create_lead_store() reads the shared DB
+    # table so separate instances still see the same data; in in-memory mode
+    # each call returns a NEW empty dict, so we MUST create one and share it.
+    from opsmesh.adapters.db.lead_store import create_lead_store
+    lead_store = create_lead_store()
+
     # The actual DB init path (used by lifespan, or called eagerly for tests)
     db_init_path = database_path if store_type == "sqlite" else None
     db_init_url = settings.database_url if store_type == "postgres" else None
 
-    intake_service = LeadIntakeService(store=store, queue=queue)
+    intake_service = LeadIntakeService(store=store, queue=queue, lead_store=lead_store)
 
     # Build the ApprovalGate (Day 5 component)
     # Phase 7: use create_approval_store() so the API and worker share the
@@ -186,6 +198,19 @@ def create_app(
     # Configure structured logging (JSON output with PII redaction)
     configure_logging()
 
+    # Determine whether to run the worker in-process. When enabled, the worker
+    # runs as a background asyncio task inside the API process, sharing the
+    # in-memory store/queue/lead_store/approval_store. This is essential for
+    # single-service deployments (e.g., a free-tier Render web service with no
+    # separate worker process and no Postgres database).
+    worker_mode = settings.worker_in_process.strip().lower()
+    if worker_mode == "true":
+        run_in_process_worker = True
+    elif worker_mode == "false":
+        run_in_process_worker = False
+    else:  # "auto" (default)
+        run_in_process_worker = (store_type == "in_memory")
+
     # Lifespan: initialize DB on startup, cleanup on shutdown.
     # This runs INSIDE uvicorn's event loop -- the ONLY place we can call
     # async DB init (open connections, create schema). Doing it in the
@@ -197,7 +222,45 @@ def create_app(
         if store_type in ("sqlite", "postgres"):
             from opsmesh.adapters.db.connection import init_db
             await init_db(database_path=db_init_path, database_url=db_init_url)
+
+        # --- Start the in-process worker (if enabled) ---
+        in_process_worker = None
+        if run_in_process_worker:
+            from opsmesh.worker import build_in_process_supervisor, Worker
+            supervisor = build_in_process_supervisor(
+                settings=settings,
+                store=store,
+                approval_gate=approval_gate,
+                lead_store=lead_store,
+            )
+            in_process_worker = Worker(
+                queue=queue,
+                supervisor=supervisor,
+                worker_id=f"in_process_{os.getpid()}",
+            )
+            await in_process_worker.start_in_background()
+            logger.info(
+                "in_process_worker.started",
+                extra={"component": "worker", "worker_id": in_process_worker.worker_id},
+            )
+
         yield
+
+        # --- Shutdown: stop the in-process worker (if running) ---
+        if in_process_worker is not None:
+            try:
+                await in_process_worker.stop()
+                logger.info(
+                    "in_process_worker.stopped",
+                    extra={
+                        "component": "worker",
+                        "processed": in_process_worker.processed_count,
+                        "failed": in_process_worker.failed_count,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("in_process_worker.stop_error: %s", exc)
+
         # --- Shutdown: close connections ---
         from opsmesh.adapters.db.connection import close_all
         await close_all()
