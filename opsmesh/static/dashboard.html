@@ -14,8 +14,8 @@
     </div>
   </div>
 
-  <script src="/ui/js/app.js?v=3"></script>
-  <script src="/ui/js/shell.js?v=3"></script>
+  <script src="/ui/js/app.js?v=4"></script>
+  <script src="/ui/js/shell.js?v=4"></script>
   <script>
     (async function () {
       try {
@@ -99,7 +99,7 @@
                 "<td>" + ui.relativeTime(r.updated_at) + "</td>" +
                 "<td>" + (r.last_error
                   ? '<span style="color: var(--danger); font-size: 12px;">' + ui.escape(r.last_error.slice(0, 50)) + "...</span>"
-                  : '<span style="color: var(--text-mute);">--</span>") + "</td>" +
+                  : '<span style="color: var(--text-mute);">--</span>') + "</td>" +
                 "</tr>";
             }).join("") + "</tbody></table></div>";
         }
