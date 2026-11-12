@@ -14,8 +14,8 @@
     </div>
   </div>
 
-  <script src="/ui/js/app.js?v=6"></script>
-  <script src="/ui/js/shell.js?v=6"></script>
+  <script src="/ui/js/app.js?v=7"></script>
+  <script src="/ui/js/shell.js?v=7"></script>
   <script>
     (async function () {
       try {
@@ -30,6 +30,11 @@
         "</div>" +
 
         '<div id="metrics" class="stat-grid"></div>' +
+
+        '<div class="card">' +
+          '<h2>Runs by state</h2>' +
+          '<div id="state-chart"></div>' +
+        "</div>" +
 
         '<div class="card">' +
           '<h2>Recent runs</h2>' +
@@ -80,6 +85,9 @@
           stat("LLM errors", m.providers && m.providers.llm
             ? (m.providers.llm.error_rate * 100).toFixed(1) + "%"
             : "0.0%", "info");
+
+        // Stage B Phase 7: runs-by-state bar chart (inline SVG, no library).
+        renderStateChart(dash.recent_runs || []);
 
         // Recent runs with token + cost display
         const runs = dash.recent_runs || [];
@@ -147,6 +155,34 @@
         return '<div class="stat"><div class="label">' + ui.escape(label) + "</div>" +
           '<div class="value ' + (kind || "") + '">' + ui.escape(value) + "</div>" +
           (sub ? '<div class="sub">' + ui.escape(sub) + "</div>" : "") + "</div>";
+      }
+
+      // Stage B Phase 7: runs-by-state horizontal bar chart (inline SVG).
+      function renderStateChart(runs) {
+        var el = document.getElementById("state-chart");
+        if (!el) return;
+        var counts = {};
+        runs.forEach(function (r) {
+          var s = r.state || "unknown";
+          counts[s] = (counts[s] || 0) + 1;
+        });
+        var states = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+        if (states.length === 0) {
+          el.innerHTML = '<div class="empty" style="padding: 24px; color: var(--text-mute);">No runs to chart yet.</div>';
+          return;
+        }
+        var max = Math.max.apply(null, states.map(function (s) { return counts[s]; }));
+        var barColor = { sent: "#34d399", failed: "#f87171", awaiting_approval: "#fbbf24", awaiting_evidence_review: "#fbbf24", send_unknown: "#fbbf24", rejected: "#f87171", researching: "#60a5fa", qualifying: "#60a5fa", drafting: "#60a5fa", critic: "#60a5fa" };
+        var rows = states.map(function (s) {
+          var w = Math.round((counts[s] / max) * 100);
+          var color = barColor[s] || "#9aa3b2";
+          return '<div class="chart-row">' +
+            '<div class="chart-label">' + ui.escape(s) + '</div>' +
+            '<div class="chart-track"><div class="chart-bar" style="width:' + w + '%; background:' + color + ';"></div></div>' +
+            '<div class="chart-count">' + counts[s] + '</div>' +
+          '</div>';
+        }).join("");
+        el.innerHTML = '<div class="chart">' + rows + '</div>';
       }
       } catch (err) {
         document.getElementById("root").innerHTML =

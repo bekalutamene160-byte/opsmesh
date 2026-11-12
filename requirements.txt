@@ -16,11 +16,11 @@ email-validator==2.2.0
 # --- Database ---
 asyncpg==0.32.0
 aiosqlite==0.22.1
-sqlalchemy==2.1.8
+sqlalchemy>=2.0,<2.1
 alembic==1.14.0
 
-# --- LLM + AI ---
-google-generativeai==0.8.3
+# --- Rate limiting (Stage B Phase 1: public write endpoint throttling) ---
+slowapi==0.1.9
 
 # --- MCP ---
 mcp==1.0.0

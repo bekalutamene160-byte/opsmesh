@@ -689,12 +689,19 @@ class CriticSpecialist:
 
 class SendingSpecialist:
     def __init__(self, email_provider=None, settings=None, lead_store=None,
-                 sent_email_store=None, history_store=None):
+                 sent_email_store=None, history_store=None, gateway=None):
         self.email_provider = email_provider
         self.settings = settings
         self.lead_store = lead_store
         self.sent_email_store = sent_email_store
         self.history_store = history_store
+        # Stage B Phase 2 (P0-1): the ToolGateway enforces the 7-check policy
+        # layer (approval verify-and-consume, payload hash binding, scope,
+        # rate limit, idempotency, audit) at the actual send site. When set,
+        # real sends go through gateway.execute("send_email", ...) with the
+        # REAL run.pending_approval_id (not the synthesized f"ap_{run_hex}").
+        # When None (dev/test), the old direct-provider path is used.
+        self.gateway = gateway
 
     async def __call__(self, run: RunRecord, budget: Any = None, ctx: Any = None) -> dict:
         if run.draft is None:
@@ -705,9 +712,8 @@ class SendingSpecialist:
         lead = await _load_lead(self.lead_store, run)
         if lead and "@" not in recipient:
             recipient = lead.contact_email
-        from_address = getattr(
-            self.settings, "workspace_sender_identity", "Bekalu <bekalu@opsmesh.dev>"
-        )
+        from opsmesh.config import get_settings
+        from_address = get_settings().workspace_sender_identity
         body = run.draft.body[:2000]
         subject = run.draft.subject[:200]
         lead_type = getattr(lead, "lead_type", "company") if lead else "company"
@@ -747,20 +753,64 @@ class SendingSpecialist:
             await _log("skipped", mock_id)
             return {"status": "skipped", "message_id": mock_id}
 
-        # Mock mode (no provider)
+        # Stage B Phase 1 (P0-3): demo-mode recipient restriction.
+        # In single_user_demo mode, real sends are restricted to the
+        # configured OPSMESH_EMAIL_TEST_RECIPIENT (Resend's verified test
+        # recipient). This prevents the demo from being an open email relay.
+        from opsmesh.config import is_demo_mode
+        if self.settings is not None and is_demo_mode(self.settings):
+            test_recipient = getattr(self.settings, "email_test_recipient", "")
+            if not test_recipient:
+                logger.warning(
+                    "Demo mode: email_test_recipient not configured — blocking send"
+                )
+                await _log("failed")
+                return {
+                    "status": "failed",
+                    "error": "Demo mode requires OPSMESH_EMAIL_TEST_RECIPIENT to be set",
+                }
+            # Normalize for comparison (strip display-name + whitespace).
+            def _bare(addr: str) -> str:
+                if "<" in addr and ">" in addr:
+                    return addr.split("<", 1)[1].split(">", 1)[0].strip().lower()
+                return addr.strip().lower()
+            if _bare(recipient) != _bare(test_recipient):
+                logger.warning(
+                    f"Demo mode: recipient {recipient!r} != test recipient "
+                    f"{test_recipient!r} — blocking send"
+                )
+                await _log("failed")
+                return {
+                    "status": "failed",
+                    "error": "Demo mode restricts sends to the configured test recipient",
+                }
+
+        # Mock mode (no provider) -- logs a synthetic send.
         if self.email_provider is None:
             mock_id = f"mock_{run.run_id[:12]}"
             await _log("sent", mock_id)
             return {"status": "sent", "message_id": mock_id}
 
-        # Real send -- create EmailMessage with VALID fields
+        # Stage B Phase 2 (P0-1): when the ToolGateway is wired, route the
+        # real send through gateway.execute("send_email", ...). The gateway
+        # enforces the 7-check policy layer at the SEND SITE — most critically,
+        # it calls RealApprovalVerifier.verify_and_consume with the REAL
+        # run.pending_approval_id and the current payload hash. A modified
+        # recipient/subject/body after approval is rejected (StaleApprovalError).
+        # Fail closed: if there is no pending_approval_id, the send is blocked.
+        if self.gateway is not None:
+            return await self._send_via_gateway(run, recipient, from_address, subject, body, _log)
+
+        # Dev/test path (no gateway): direct provider call. The synthesized
+        # approval_id here is ONLY for the provider's audit trail — it does
+        # NOT authorize anything (the gateway is what enforces approval).
         try:
             from opsmesh.adapters.email.base import EmailMessage
 
             run_hex = run.run_id.replace("run_", "").replace("-", "")[:12]
             if len(run_hex) < 12:
                 run_hex = run_hex.ljust(12, "0")
-            approval_id = f"ap_{run_hex}"
+            approval_id = run.pending_approval_id or f"ap_{run_hex}"
 
             msg = EmailMessage(
                 to=recipient,
@@ -777,8 +827,79 @@ class SendingSpecialist:
             await _log("unknown")
             return {"status": "unknown", "error": "Send timed out"}
         except Exception as e:
-            # Log the real error so the operator can see it in the Activity tab.
-            # Return "failed" (not "skipped") so the run state reflects the failure.
+            logger.error(f"Email send failed: {type(e).__name__}: {e}")
+            await _log("failed")
+            return {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+    async def _send_via_gateway(self, run, recipient, from_address, subject, body, _log):
+        """Route the email send through the ToolGateway (P0-1).
+
+        The gateway verifies the Gate 2 approval (existence, expiration,
+        consumption, workspace, run, action, payload_hash) BEFORE the
+        provider is called. The approval_id is run.pending_approval_id — the
+        REAL one created by the supervisor when the run entered
+        AWAITING_APPROVAL, NOT the synthesized f"ap_{run_hex}".
+        """
+        from opsmesh.approval_store import compute_payload_hash, TOOL_PROTECTED_FIELDS
+        from opsmesh.security_context import AuthContext
+        from opsmesh.tool_gateway import GatewayError
+
+        approval_id = run.pending_approval_id
+        if not approval_id:
+            logger.warning(f"Send blocked: run {run.run_id} has no pending_approval_id (Gate 2 not approved)")
+            await _log("failed")
+            return {
+                "status": "failed",
+                "error": "No Gate 2 approval (pending_approval_id is empty) — send blocked",
+            }
+
+        payload = {
+            "to": recipient,
+            "from_": from_address,
+            "subject": subject,
+            "body": body,
+            # approval_id is NOT a protected field (not in TOOL_PROTECTED_FIELDS),
+            # so it doesn't affect the payload_hash. It's passed through so the
+            # provider_router can populate the EmailMessage's audit-trail field.
+            "approval_id": approval_id,
+        }
+        protected = TOOL_PROTECTED_FIELDS.get("send_email")
+        # Compute the hash from the PROTECTED fields only (to, from_, subject, body).
+        protected_payload = {k: payload[k] for k in protected if k in payload}
+        payload_hash = compute_payload_hash("send_email", protected_payload, protected)
+
+        # The AuthContext carries the trusted workspace_id (from the run, never
+        # from LLM args) + the scopes the SendingSpecialist needs.
+        auth = AuthContext(
+            workspace_id=run.workspace_id,
+            scopes=["email.send", "crm.read", "crm.write", "notify.send", "web.search"],
+        )
+
+        try:
+            result = await self.gateway.execute(
+                "send_email",
+                payload,
+                auth=auth,
+                run_id=run.run_id,
+                step_id=run.step_id,
+                approval_id=approval_id,
+                payload_hash=payload_hash,
+                actor="sending_specialist",
+            )
+            # The provider_router returns the SendResult; extract message_id.
+            message_id = getattr(result, "message_id", None) or str(result)
+            await _log("sent", message_id)
+            return {"status": "sent", "message_id": message_id}
+        except GatewayError as e:
+            logger.warning(
+                f"Send blocked by gateway: [{e.tool_name}] {e.code}: {e.message}"
+            )
+            await _log("failed")
+            return {
+                "status": "failed",
+                "error": f"gateway:{e.code}:{e.message[:140]}",
+            }
+        except Exception as e:
             logger.error(f"Email send failed: {type(e).__name__}: {e}")
             await _log("failed")
             return {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -790,28 +911,139 @@ class SendingSpecialist:
 
 
 class CRMUpdatingSpecialist:
-    def __init__(self, crm_provider=None, settings=None, lead_store=None):
+    def __init__(self, crm_provider=None, settings=None, lead_store=None,
+                 outbox_store=None, gateway=None):
         self.crm_provider = crm_provider
         self.settings = settings
         self.lead_store = lead_store
+        # Phase 3 wires the outbox_store so CRM writes go through the drainer
+        # instead of the provider directly. Kept optional for back-compat.
+        self.outbox_store = outbox_store
+        # Stage B Phase 2 (P0-1): when set, CRM syncs route through the
+        # ToolGateway (scope, rate limit, idempotency, audit) via the
+        # sync_lead_to_crm tool. When None (dev/test), direct provider call.
+        self.gateway = gateway
 
     async def __call__(self, run: RunRecord, budget: Any = None, ctx: Any = None) -> dict:
+        # Stage B Phase 1 (P0-4): demo-mode CRM guard.
+        # In single_user_demo mode, live HubSpot mutations are disabled by
+        # default (crm_demo_mode == "read_only"). The run still transitions
+        # to SENT — CRM sync is non-blocking. Phase 3 replaces this skip
+        # with a proper CRMOutboxOp (status SKIPPED_DEMO) so the outbox
+        # table records the decision.
+        from opsmesh.config import is_demo_mode
+        if self.settings is not None and is_demo_mode(self.settings):
+            crm_demo_mode = getattr(self.settings, "crm_demo_mode", "read_only")
+            if crm_demo_mode in ("read_only", "disabled"):
+                logger.info(
+                    f"CRM demo mode ({crm_demo_mode}) — skipping live HubSpot mutation"
+                )
+                return {
+                    "status": "skipped_demo",
+                    "crm_lead_id": None,
+                    "reason": f"crm_demo_mode={crm_demo_mode}",
+                }
+
         if self.crm_provider is None:
             return {"status": "synced", "crm_lead_id": f"mock_crm_{run.lead_id[:12]}"}
 
+        # Load the lead data (needed for outbox + gateway + direct paths).
+        lead = await _load_lead(self.lead_store, run)
+        company = lead.company if lead else f"Company {run.lead_id[:8]}"
+        contact_email = lead.contact_email if lead else ""
+        contact_name = lead.contact_name if lead else None
+        industry = lead.industry if lead else None
+
+        # Stage B Phase 3: when the outbox_store is wired, ENQUEUE a CRM outbox
+        # op instead of calling the CRM synchronously. The CRMOutboxDrainer
+        # (background task) claims + drains it independently. This decouples
+        # CRM sync from the email send (Correction 2: CRM failure never
+        # triggers email resend). The run transitions to SENT regardless.
+        if self.outbox_store is not None:
+            from opsmesh.models import CRMOutboxOp, CRMOutboxOperation
+            op = CRMOutboxOp(
+                workspace_id=run.workspace_id,
+                run_id=run.run_id,
+                lead_id=run.lead_id,
+                operation=CRMOutboxOperation.CREATE_LEAD,
+                args={
+                    "company": company,
+                    "contact_email": contact_email,
+                    "contact_name": contact_name or "",
+                    "industry": industry or "",
+                },
+            )
+            try:
+                self.outbox_store.enqueue(op)
+                logger.info(f"Enqueued CRM outbox op {op.id} for run {run.run_id}")
+                return {"status": "enqueued", "op_id": op.id, "crm_lead_id": None}
+            except Exception as e:
+                logger.warning(f"Failed to enqueue CRM outbox op: {e}")
+                # Fall through to the gateway/direct path as a fallback.
+                # The send already happened; CRM sync is non-blocking.
+
+        # Stage B Phase 2 (P0-1): route through the gateway when wired.
+        if self.gateway is not None:
+            return await self._sync_via_gateway(
+                run, company, contact_email, contact_name, industry
+            )
+
+        # Dev/test path (no gateway, no outbox): direct provider call.
         try:
             from opsmesh.adapters.crm.base import CRMLeadCreate
-            lead = await _load_lead(self.lead_store, run)
-            company = lead.company if lead else f"Company {run.lead_id[:8]}"
-            contact_email = lead.contact_email if lead else ""
             result = await self.crm_provider.create_lead(CRMLeadCreate(
                 workspace_id=run.workspace_id,
                 company=company,
                 contact_email=contact_email,
-                contact_name=lead.contact_name if lead else None,
-                industry=lead.industry if lead else None,
+                contact_name=contact_name,
+                industry=industry,
             ))
             return {"status": "synced", "crm_lead_id": result.lead_id}
+        except Exception as e:
+            logger.warning(f"CRM sync failed (non-blocking): {e}")
+            return {"status": "failed", "error": str(e)[:200]}
+
+    async def _sync_via_gateway(self, run, company, contact_email, contact_name, industry):
+        """Route the CRM sync through the ToolGateway (P0-1).
+
+        Uses the sync_lead_to_crm tool (WRITE, no fresh approval required —
+        the lead was already Gate-2-approved for outreach). The gateway still
+        enforces scope, rate limit, idempotency, and audit.
+        """
+        from opsmesh.security_context import AuthContext
+        from opsmesh.tool_gateway import GatewayError
+
+        args = {
+            "workspace_id": run.workspace_id,
+            "company": company,
+            "contact_email": contact_email,
+            "contact_name": contact_name or "",
+            "industry": industry or "",
+            "lead_id": run.lead_id,
+        }
+        auth = AuthContext(
+            workspace_id=run.workspace_id,
+            scopes=["crm.read", "crm.write", "email.send", "notify.send", "web.search"],
+        )
+        try:
+            result = await self.gateway.execute(
+                "sync_lead_to_crm",
+                args,
+                auth=auth,
+                run_id=run.run_id,
+                step_id=run.step_id,
+                approval_id=None,  # no fresh approval needed (Gate 2 already approved)
+                payload_hash=None,
+                actor="crm_updating_specialist",
+            )
+            crm_lead_id = getattr(result, "lead_id", None) or str(result)
+            return {"status": "synced", "crm_lead_id": crm_lead_id}
+        except GatewayError as e:
+            logger.warning(
+                f"CRM sync blocked by gateway: [{e.tool_name}] {e.code}: {e.message}"
+            )
+            # Non-blocking: the run still goes to SENT.
+            return {"status": "failed", "error": f"gateway:{e.code}:{e.message[:140]}"}
         except Exception as e:
             logger.warning(f"CRM sync failed (non-blocking): {e}")
             return {"status": "failed", "error": str(e)[:200]}
@@ -831,6 +1063,8 @@ def build_specialists(
     lead_store=None,
     sent_email_store=None,
     history_store=None,
+    outbox_store=None,
+    gateway=None,
 ) -> dict[str, Any]:
     """Build all 6 specialists.
 
@@ -839,6 +1073,11 @@ def build_specialists(
     durable sent-email log (visible in the Activity tab).
     Pass history_store so each specialist logs a LeadHistoryEvent after
     it runs (the agent's memory -- visible in the Activity tab + lead detail).
+    Pass outbox_store (Phase 3) so CRMUpdatingSpecialist writes a CRMOutboxOp
+    instead of calling the CRM directly.
+    Pass gateway (Phase 2) so SendingSpecialist + CRMUpdatingSpecialist route
+    their side effects through the ToolGateway (approval verify-and-consume,
+    payload hash binding, scope, rate limit, idempotency, audit).
     """
     return {
         "researching": ResearchSpecialist(llm=llm, research=research, lead_store=lead_store, history_store=history_store),
@@ -851,8 +1090,15 @@ def build_specialists(
             lead_store=lead_store,
             sent_email_store=sent_email_store,
             history_store=history_store,
+            gateway=gateway,
         ),
-        "crm_updating": CRMUpdatingSpecialist(crm_provider=crm_provider, settings=settings, lead_store=lead_store),
+        "crm_updating": CRMUpdatingSpecialist(
+            crm_provider=crm_provider,
+            settings=settings,
+            lead_store=lead_store,
+            outbox_store=outbox_store,
+            gateway=gateway,
+        ),
     }
 
 

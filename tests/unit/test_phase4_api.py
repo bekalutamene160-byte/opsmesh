@@ -75,10 +75,12 @@ class TestDetailedHealth:
         assert "crm" in data["providers"]
 
     def test_returns_auth_mode(self, client):
-        """In dev mode (no Google OAuth configured), auth.mode is 'dev'."""
+        """Stage B Phase 5: in single_user_demo mode (the default), auth.mode
+        is 'demo' — the dashboard opens with no login."""
         r = client.get("/api/v1/health")
         data = r.json()
-        assert data["auth"]["mode"] == "dev"
+        assert data["auth"]["mode"] == "demo"
+        assert data["auth"]["access_mode"] == "single_user_demo"
         # Backward-compat field still present
         assert data["auth"]["jwt_secret_configured"] is False
         assert data["auth"]["google_oauth_configured"] is False

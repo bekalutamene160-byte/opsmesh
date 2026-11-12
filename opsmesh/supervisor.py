@@ -133,12 +133,20 @@ class Supervisor:
         approvals: Any = None,                  # Day 5
         budget_factory: Optional[Any] = None,   # Day 3
         tracer: Any = None,                      # Day 6
+        gateway: Any = None,                     # Stage B Phase 2 (P0-1)
     ) -> None:
         self.specialists = specialists
         self.store = store
         self.approvals = approvals
         self.budget_factory = budget_factory
         self.tracer = tracer
+        # Stage B Phase 2 (P0-1): the ToolGateway is the policy enforcement
+        # layer. Specialists that produce side effects (SendingSpecialist,
+        # CRMUpdatingSpecialist) route through gateway.execute(...) when set.
+        # The supervisor does NOT call the gateway directly — it passes a
+        # SecurityContext to each specialist via ctx, and the specialist
+        # decides whether to use the gateway.
+        self.gateway = gateway
 
     # -------------------------------------------------------------------
     # Main loop — DYNAMIC step computation (Correction 16)
@@ -282,7 +290,19 @@ class Supervisor:
 
         try:
             # --- Delegate to specialist ---
-            result = await specialist(run, budget=budget, ctx=None)
+            # Stage B Phase 2 (P0-1): pass a scoped SecurityContext so the
+            # SendingSpecialist + CRMUpdatingSpecialist can route through the
+            # ToolGateway with the trusted workspace_id + run_id. The ctx
+            # carries trusted identity (never from LLM args).
+            from opsmesh.security_context import SecurityContext
+            ctx = SecurityContext(
+                workspace_id=run.workspace_id,
+                run_id=run.run_id,
+                step_id=run.step_id,
+                actor="supervisor",
+                scopes=["crm.read", "crm.write", "email.send", "notify.send", "web.search"],
+            )
+            result = await specialist(run, budget=budget, ctx=ctx)
 
             # --- Track actual token usage + cost from the LLM response ---
             # The specialists return typed results (ResearchResult, etc.),
@@ -531,8 +551,16 @@ class Supervisor:
         Called when the run enters AWAITING_APPROVAL.
         The approval is bound to the EXACT draft payload (recipient, subject, body).
         A material change invalidates the approval (StaleApprovalError).
+
+        Stage B Phase 1 (P1-2): the sender identity is read from
+        Settings.workspace_sender_identity (default
+        ``OpsMesh <onboarding@resend.dev>`` — Resend's pre-verified test
+        sender). The previous hardcoded ``bekalu@opsmesh.dev`` was an
+        unverified domain that caused Resend 403s and bound the approval
+        payload hash to the wrong ``from_``.
         """
         from opsmesh.approval_store import compute_payload_hash, TOOL_PROTECTED_FIELDS
+        from opsmesh.config import get_settings
         from opsmesh.models import ApprovalKind
 
         if run.draft is None:
@@ -544,10 +572,11 @@ class Supervisor:
                 pass
             return
 
-        # Build the payload from the draft
+        # Build the payload from the draft — sender from Settings (P1-2).
+        sender_identity = get_settings().workspace_sender_identity
         payload = {
             "to": run.draft.recipient,
-            "from_": "bekalu@opsmesh.dev",  # Day 6: from workspace config
+            "from_": sender_identity,
             "subject": run.draft.subject,
             "body": run.draft.body,
         }

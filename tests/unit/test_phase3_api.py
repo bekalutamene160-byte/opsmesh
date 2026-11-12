@@ -93,7 +93,14 @@ class TestAuthProductionMode:
     """
 
     def _enable_google_oauth(self):
-        """Configure the env so auth is enabled (Google OAuth mode)."""
+        """Configure the env so auth is enabled (Google OAuth mode).
+
+        Stage B Phase 5: the default access_mode is single_user_demo (no
+        auth). To test the multi-user OAuth flow we must explicitly set
+        OPSMESH_ACCESS_MODE=multi_user so the OAuth router mounts and
+        get_current_user requires a session JWT.
+        """
+        os.environ["OPSMESH_ACCESS_MODE"] = "multi_user"
         os.environ["OPSMESH_GOOGLE_OAUTH_CLIENT_ID"] = "test-client-id.google.com"
         os.environ["OPSMESH_SESSION_SECRET"] = "test-session-secret-32-bytes-long!!"
         get_settings.cache_clear()

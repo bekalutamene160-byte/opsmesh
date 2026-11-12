@@ -191,6 +191,49 @@ CREATE TABLE IF NOT EXISTS workspace_members (
     PRIMARY KEY (workspace_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_wm_user ON workspace_members(user_id);
+
+-- 10. sent_emails (Stage B Phase 4 — durable send log / Activity tab source)
+CREATE TABLE IF NOT EXISTS sent_emails (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    lead_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    recipient TEXT NOT NULL,
+    from_address TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'sent',
+    provider_message_id TEXT,
+    lead_type TEXT NOT NULL DEFAULT 'company',
+    sent_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sent_workspace_time ON sent_emails(workspace_id, sent_at);
+CREATE INDEX IF NOT EXISTS idx_sent_lead ON sent_emails(lead_id);
+CREATE INDEX IF NOT EXISTS idx_sent_run ON sent_emails(run_id);
+
+-- 11. lead_history (Stage B Phase 4 — durable interaction timeline / memory)
+CREATE TABLE IF NOT EXISTS lead_history (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    lead_id TEXT NOT NULL,
+    run_id TEXT,
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    detail TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_history_workspace_time ON lead_history(workspace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_history_lead ON lead_history(lead_id);
+
+-- 12. contact_policy (Stage B Phase 4 — durable suppression list)
+CREATE TABLE IF NOT EXISTS contact_policy (
+    workspace_id TEXT NOT NULL,
+    email TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_policy_workspace ON contact_policy(workspace_id);
 """
 
 
@@ -380,6 +423,55 @@ SCHEMA_POSTGRES = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_wm_user ON workspace_members(user_id)",
+
+    # 10. sent_emails (Stage B Phase 4 — durable send log)
+    """
+    CREATE TABLE IF NOT EXISTS sent_emails (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        lead_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        from_address TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'sent',
+        provider_message_id TEXT,
+        lead_type TEXT NOT NULL DEFAULT 'company',
+        sent_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_sent_workspace_time ON sent_emails(workspace_id, sent_at)",
+    "CREATE INDEX IF NOT EXISTS idx_sent_lead ON sent_emails(lead_id)",
+    "CREATE INDEX IF NOT EXISTS idx_sent_run ON sent_emails(run_id)",
+
+    # 11. lead_history (Stage B Phase 4 — durable interaction timeline)
+    """
+    CREATE TABLE IF NOT EXISTS lead_history (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        lead_id TEXT NOT NULL,
+        run_id TEXT,
+        event_type TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        detail TEXT,
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_history_workspace_time ON lead_history(workspace_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_history_lead ON lead_history(lead_id)",
+
+    # 12. contact_policy (Stage B Phase 4 — durable suppression list)
+    """
+    CREATE TABLE IF NOT EXISTS contact_policy (
+        workspace_id TEXT NOT NULL,
+        email TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT 'manual',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, email)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_policy_workspace ON contact_policy(workspace_id)",
 ]
 
 

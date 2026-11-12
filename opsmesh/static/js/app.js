@@ -35,6 +35,10 @@
   }
 
   // ---- Auth module ----
+  // Stage B Phase 5: in single_user_demo mode (the default), NO token is
+  // required. The dashboard opens directly. The auth module still exists
+  // so multi_user mode (Google OAuth) can be re-enabled by flipping
+  // OPSMESH_ACCESS_MODE=multi_user — no frontend rewrite needed.
   const auth = {
     token: readToken(),
     user: readUser(),
@@ -45,11 +49,14 @@
       this.token = token || "";
       try {
         const health = await api.get("/api/v1/health");
+        const mode = health.auth ? health.auth.mode : "dev";
         const user = {
-          // In dev mode we synthesize a dev user; in prod mode we'd parse the JWT
-          email: token ? "(JWT user)" : "dev@opsmesh.dev",
+          // In demo/dev mode we synthesize a user; in google_oauth we'd parse the JWT
+          email: token ? "(JWT user)" : (health.auth && health.auth.mode === "demo"
+            ? "demo@opsmesh.dev"
+            : "dev@opsmesh.dev"),
           workspace_id: "default",
-          mode: health.auth ? health.auth.mode : "dev",
+          mode: mode,
         };
         writeUser(user);
         this.user = user;
@@ -68,6 +75,8 @@
       // POST the Google ID token to /api/v1/auth/google.
       // Backend verifies it (via Google's JWKS) and returns a session JWT.
       // We store the SESSION JWT (not Google's token).
+      // NOTE: only available in multi_user mode (OPSMESH_ACCESS_MODE=multi_user).
+      // In single_user_demo mode the OAuth router is not mounted.
       try {
         const result = await fetch("/api/v1/auth/google", {
           method: "POST",
@@ -114,28 +123,46 @@
     },
 
     logout() {
+      // Stage B Phase 5: in demo mode there is no session to clear — just
+      // reload. In multi_user mode, clear the token and go to login.
+      const mode = (this.user && this.user.mode) || "demo";
       writeToken("");
       writeUser(null);
       this.token = "";
       this.user = null;
-      window.location.href = "/ui/login.html";
+      if (mode === "demo" || mode === "dev") {
+        window.location.reload();
+      } else {
+        window.location.href = "/ui/login.html";
+      }
     },
 
     requireAuth() {
-      // For pages that require auth -- redirect to login if no token AND
-      // the server is in production mode. We can't know server mode without
-      // calling /api/v1/health, so we attempt the call and react.
+      // Stage B Phase 5: in demo mode (the default), no auth is required.
+      // The dashboard opens directly. We still call /health to learn the
+      // mode and synthesize the demo user object (so the shell can show
+      // the workspace + mode badge).
       // Returns a Promise that resolves to true (authed) or redirects.
       return api.get("/api/v1/health").then(function (health) {
         const mode = (health.auth && health.auth.mode) || "dev";
+        if (mode === "demo") {
+          // Demo mode: no token, no login. Synthesize the demo user.
+          auth.user = {
+            email: "demo@opsmesh.dev",
+            workspace_id: "default",
+            mode: "demo",
+          };
+          writeUser(auth.user);
+          return true;
+        }
         if (mode === "dev" && !auth.token) {
-          // Dev mode: no token required. Synthesize a dev user.
+          // Dev mode (multi_user + no OAuth): no token required.
           auth.user = { email: "dev@opsmesh.dev", workspace_id: "default", mode: "dev" };
           writeUser(auth.user);
           return true;
         }
         if (mode !== "dev" && !auth.token) {
-          // Production mode and no token -> redirect to login
+          // Production multi_user mode and no token -> redirect to login
           window.location.href = "/ui/login.html";
           return false;
         }

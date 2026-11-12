@@ -121,13 +121,46 @@ class Settings(BaseSettings):
     # Google OAuth (production) or dev mode (no auth). The session_secret
     # is used to sign our own session JWTs (NOT Google's ID tokens).
 
+    # --- Access mode (Stage B Phase 1/5) ---
+    # single_user_demo (default): no authentication; the app opens directly to
+    #   the dashboard. ALL unauthenticated access is bound server-side to a
+    #   single `demo_workspace_id`. Email sends are restricted to
+    #   `email_test_recipient`; CRM mutations are gated by `crm_demo_mode`.
+    #   This is an explicitly UNAUTHENTICATED DEMO mode — NOT secure for
+    #   multi-tenant production. Documented migration path: flip to
+    #   `multi_user` to re-enable Google OAuth + per-user workspaces.
+    # multi_user: requires Google OAuth + session JWT; per-user workspaces.
+    access_mode: str = "single_user_demo"
+    demo_workspace_id: str = "default"  # the single workspace bound in demo mode
+
+    # --- Demo-mode safety guards (Stage B Phase 1) ---
+    # email_test_recipient: in single_user_demo mode, SendingSpecialist asserts
+    #   the recipient equals this address before any real send. Set to the
+    #   Resend account's verified test recipient.
+    email_test_recipient: str = ""
+    # crm_demo_mode: governs live HubSpot mutations.
+    #   read_only (default): writes a SKIPPED_DEMO outbox op; never calls HubSpot.
+    #   disabled: no CRM step at all.
+    #   live: calls the real CRM (NOT recommended for public demo).
+    crm_demo_mode: str = "read_only"
+
     # --- Observability (ADR-006) ---
     obs_backend: str = "local"        # local | otlp | console
     otel_exporter_otlp_endpoint: str = ""
 
     # --- Workspace defaults (seed) ---
     workspace_owner_email: str = "owner@example.com"
-    workspace_sender_identity: str = "Bekalu <bekalu@opsmesh.dev>"
+    # Resend's pre-verified test sender — works with no custom domain.
+    # Format: "Display Name <localpart@resend.dev>". Override with a verified
+    # custom domain for production outreach.
+    workspace_sender_identity: str = "OpsMesh <onboarding@resend.dev>"
+
+    # --- CORS (Stage B Phase 1) ---
+    # Comma-separated list of allowed origins. Empty → same-origin only
+    # (the frontend is served at /ui on the same origin, so no CORS is needed
+    # for the demo). Set to explicit origins for multi-origin deployments.
+    # Wildcard "*" is rejected in single_user_demo mode for safety.
+    cors_allowed_origins: str = ""
 
 
 @lru_cache()
@@ -140,4 +173,98 @@ def get_settings() -> Settings:
     return Settings()
 
 
-__all__ = ["Settings", "get_settings"]
+# ---------------------------------------------------------------------------
+# Demo-mode helpers (Stage B Phase 1)
+# ---------------------------------------------------------------------------
+
+
+def is_demo_mode(settings: Optional[Settings] = None) -> bool:
+    """True when OPSMESH_ACCESS_MODE == 'single_user_demo'.
+
+    In demo mode, all unauthenticated access is bound server-side to a single
+    `demo_workspace_id`; no browser-supplied workspace_id is ever trusted.
+    """
+    s = settings or get_settings()
+    return (s.access_mode or "").strip().lower() == "single_user_demo"
+
+
+def resolve_bound_workspace(settings: Optional[Settings] = None) -> str:
+    """Resolve the workspace ID this deployment is bound to.
+
+    In single_user_demo mode: returns settings.demo_workspace_id (the single
+    server-bound workspace). Browser-supplied workspace_ids are NEVER trusted.
+
+    In multi_user mode: raises RuntimeError — the auth layer (get_current_user)
+    must derive the workspace from the session JWT per-request.
+
+    This is the single enforcement point for P0-6 (unauthenticated endpoints
+    hardcoded to workspace 'default'). Every public route handler reads the
+    workspace from here (or from get_current_user in multi_user mode), never
+    from the request body/query.
+    """
+    s = settings or get_settings()
+    if is_demo_mode(s):
+        return s.demo_workspace_id or "default"
+    # multi_user mode: workspace resolution is the auth layer's job.
+    raise RuntimeError(
+        "multi_user access_mode requires per-request workspace resolution via "
+        "get_current_user; resolve_bound_workspace must not be called directly."
+    )
+
+
+__all__ = [
+    "Settings",
+    "get_settings",
+    "is_demo_mode",
+    "resolve_bound_workspace",
+    "validate_config",
+]
+
+
+def validate_config(settings: Optional[Settings] = None) -> list[str]:
+    """Stage B Phase 8: validate the config for invalid combinations.
+
+    Returns a list of human-readable warning strings (empty if the config
+    is sound). Called at startup so misconfiguration is loud, not silent.
+
+    Checks:
+      - access_mode is one of the allowed values.
+      - crm_demo_mode is one of the allowed values (only in demo mode).
+      - production_mode + multi_user without OAuth secrets is flagged.
+      - email_provider=resend + kill_switch=false but no email_test_recipient
+        in demo mode is flagged (sends would be blocked at the specialist).
+    """
+    s = settings or get_settings()
+    warnings: list[str] = []
+    valid_access_modes = {"single_user_demo", "multi_user"}
+    if (s.access_mode or "").strip().lower() not in valid_access_modes:
+        warnings.append(
+            f"OPSMESH_ACCESS_MODE={s.access_mode!r} is not one of {sorted(valid_access_modes)}."
+        )
+    if is_demo_mode(s):
+        valid_crm_modes = {"read_only", "disabled", "live"}
+        if (s.crm_demo_mode or "").strip().lower() not in valid_crm_modes:
+            warnings.append(
+                f"OPSMESH_CRM_DEMO_MODE={s.crm_demo_mode!r} is not one of {sorted(valid_crm_modes)}."
+            )
+        if (
+            (s.email_provider or "").lower() == "resend"
+            and not s.email_kill_switch
+            and not s.email_test_recipient
+        ):
+            warnings.append(
+                "OPSMESH_EMAIL_PROVIDER=resend with EMAIL_KILL_SWITCH=false but "
+                "OPSMESH_EMAIL_TEST_RECIPIENT is empty — demo sends will be blocked."
+            )
+    else:
+        # multi_user mode: OAuth + session secret required if production_mode.
+        if s.production_mode:
+            if not getattr(s, "google_oauth_client_id", ""):
+                warnings.append(
+                    "multi_user + production_mode requires OPSMESH_GOOGLE_OAUTH_CLIENT_ID."
+                )
+            if not getattr(s, "session_secret", "") or "change-me" in (getattr(s, "session_secret", "") or ""):
+                warnings.append(
+                    "multi_user + production_mode requires OPSMESH_SESSION_SECRET."
+                )
+    return warnings

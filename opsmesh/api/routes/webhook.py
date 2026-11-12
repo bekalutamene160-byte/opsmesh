@@ -30,6 +30,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 
+from opsmesh.api.rate_limit import WEBHOOK_LIMIT, limiter
+from opsmesh.config import resolve_bound_workspace
 from opsmesh.models import LeadSource
 from opsmesh.services.lead_intake import (
     DuplicateSubmission,
@@ -44,6 +46,7 @@ router = APIRouter(prefix="/api/v1", tags=["webhook"])
 # Module-level variables (updated by configure_webhook_route)
 _intake_service = None
 _secret = ""
+_workspace_id = "default"
 
 
 # ---------------------------------------------------------------------------
@@ -99,23 +102,38 @@ class WebhookSuppressed(BaseModel):
 def configure_webhook_route(
     intake_service: LeadIntakeService,
     webhook_secret: str,
+    workspace_id: Optional[str] = None,
 ) -> None:
     """Configure the webhook route with the given service and secret.
 
     Uses module-level variables so that each create_app() call updates
     the service and secret used by the handler.
+
+    Stage B Phase 1 (P0-6): the workspace is bound server-side to
+    `settings.demo_workspace_id` (in single_user_demo mode). The request
+    body NEVER supplies the workspace_id.
     """
-    global _intake_service, _secret
+    global _intake_service, _secret, _workspace_id
     _intake_service = intake_service
     _secret = webhook_secret
+    if workspace_id is not None:
+        _workspace_id = workspace_id
+    else:
+        try:
+            _workspace_id = resolve_bound_workspace()
+        except RuntimeError:
+            _workspace_id = "default"
 
     @router.post("/events/new_lead", status_code=202)
+    @limiter.limit(WEBHOOK_LIMIT)
     async def new_lead_webhook(request: Request):
         """Authenticated webhook for inbound lead events.
 
         Returns 202 Accepted on success (lead created + job enqueued).
         Returns 401 on invalid signature.
         Returns 202 with status=duplicate on duplicate submission_id.
+
+        Stage B Phase 1 (P0-5): rate-limited per-IP (signed endpoint, 30/min).
         """
         # 1. Read the RAW body — NOT re-serialized JSON.
         #    The HMAC is computed on the exact bytes received.
@@ -142,9 +160,11 @@ def configure_webhook_route(
             raise HTTPException(status_code=422, detail=f"Validation error: {e}")
 
         # 5. Create the lead via LeadIntakeService.
+        #    Workspace is server-bound (P0-6) — never derived from the secret
+        #    or the request body in single_user_demo mode.
         try:
             result = await _intake_service.create_lead(
-                workspace_id="default",  # Day 6: derive from webhook secret
+                workspace_id=_workspace_id,
                 company=payload.company,
                 contact_email=str(payload.contact_email),
                 contact_name=payload.contact_name,

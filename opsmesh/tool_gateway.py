@@ -137,6 +137,18 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
         required_gate="evidence_review",  # Gate 1 (unknown company on webhook)
         rate_limit_per_min=10,
     ),
+    "sync_lead_to_crm": ToolPolicy(
+        # Stage B Phase 2: post-send CRM sync. The lead was already human-approved
+        # via Gate 2 (email_send) before this runs, so a FRESH approval is not
+        # required — but scope, rate limit, idempotency, and audit still apply.
+        # This is the tool the CRMUpdatingSpecialist uses (NOT create_lead, which
+        # is the Gate-1-gated webhook-intake path).
+        name="sync_lead_to_crm",
+        side_effect=SideEffect.WRITE,
+        required_scope="crm.write",
+        requires_approval=False,
+        rate_limit_per_min=10,
+    ),
     "send_email": ToolPolicy(
         name="send_email",
         side_effect=SideEffect.NOTIFY,
@@ -290,6 +302,7 @@ class ToolGateway:
         approval_verifier: RealApprovalVerifier,
         audit_logger: Optional[AuditLogger] = None,
         rate_limiter: Optional[RateLimiter] = None,
+        provider_router: Optional[dict[str, Any]] = None,
     ):
         self.client = client
         self.store = store
@@ -297,6 +310,13 @@ class ToolGateway:
         self._idempotent_executor = IdempotentToolExecutor(store=store)
         self.audit_logger = audit_logger or InMemoryAuditLogger()
         self.rate_limiter = rate_limiter or InMemoryRateLimiter()
+        # Stage B Phase 2 (P0-1): provider_router lets the SendingSpecialist
+        # and CRMUpdatingSpecialist route their provider calls THROUGH the
+        # gateway (all 7 policy checks) without a full MCP roundtrip. Each
+        # entry maps tool_name -> async callable(args: dict, ctx: SecurityContext)
+        # -> result. When a tool is in the router, the gateway dispatches via
+        # it; otherwise it falls back to the MCP client.
+        self.provider_router = provider_router or {}
 
     async def execute(
         self,
@@ -380,10 +400,17 @@ class ToolGateway:
             self._audit(tool_name, args, auth, run_id, "rejected", "rate_limited")
             raise RateLimitError(tool_name, policy.rate_limit_per_min)
 
-        # --- Check 6: Idempotency (wrap the MCP call) ---
+        # --- Check 6: Idempotency (wrap the dispatch call) ---
+        # Stage B Phase 2 (P0-1): prefer the provider_router (direct provider
+        # dispatch through the gateway) when the tool is registered; fall back
+        # to the MCP client otherwise. Either way, all 7 checks already ran.
+        if tool_name in self.provider_router:
+            dispatcher = self._provider_dispatcher(tool_name, ctx)
+        else:
+            dispatcher = self._mcp_dispatcher(tool_name, ctx)
         try:
             result = await self._idempotent_executor.call(
-                tool=self._mcp_dispatcher(tool_name, ctx),
+                tool=dispatcher,
                 workspace_id=auth.workspace_id,
                 run_id=run_id,
                 step_id=step_id,
@@ -412,6 +439,17 @@ class ToolGateway:
         Passes the SecurityContext to the MCP client for workspace scoping."""
         async def dispatch(**kwargs):
             return await self.client.call_tool(tool_name, kwargs, ctx)
+        return dispatch
+
+    def _provider_dispatcher(self, tool_name: str, ctx: SecurityContext):
+        """Stage B Phase 2 (P0-1): dispatch directly to the registered provider.
+
+        The provider_router entry is `async def(args: dict, ctx: SecurityContext)
+        -> result`. The SecurityContext carries the trusted workspace_id + run_id
+        so the provider never trusts LLM-supplied identity."""
+        router = self.provider_router[tool_name]
+        async def dispatch(**kwargs):
+            return await router(kwargs, ctx)
         return dispatch
 
     def _audit(

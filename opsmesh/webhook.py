@@ -15,13 +15,17 @@ Architecture correction (OPSMESH_Corrections Issue #14, #15):
   Additional defenses:
     - Constant-time comparison via hmac.compare_digest (prevents timing attacks).
     - 401 on missing or invalid signature.
-    - The secret is read from env WEBHOOK_SECRET.
+    - The secret MUST be passed explicitly by the caller (the route handler
+      reads it from Settings.webhook_secret). verify_hmac called without a
+      secret raises WebhookSignatureError — it never silently reads an env
+      var. (Stage B Phase 1: removed the unprefixed WEBHOOK_SECRET fallback
+      that always returned "" and silently failed closed.)
 
 Usage:
     from opsmesh.webhook import verify_hmac
     raw_body = await request.body()  # bytes
     signature = request.headers.get("X-Signature")  # hex string
-    if not verify_hmac(raw_body, signature):
+    if not verify_hmac(raw_body, signature, secret=settings.webhook_secret):
         raise HTTPException(401, "Invalid signature")
 """
 
@@ -29,7 +33,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 from typing import Optional
 
 
@@ -46,7 +49,7 @@ def compute_signature(secret: str, raw_body: bytes) -> str:
     Compute the HMAC-SHA256 signature of raw_body using secret.
 
     Args:
-        secret: the shared secret (env WEBHOOK_SECRET).
+        secret: the shared secret (from Settings.webhook_secret).
         raw_body: the EXACT bytes received over the wire. NOT re-serialized
             JSON. The sender computes the signature on the bytes they send;
             the receiver must verify on the bytes they receive.
@@ -79,11 +82,14 @@ def verify_hmac(
         raw_body: the exact bytes received in the request body.
         signature: the hex signature from the X-Signature header.
             None if the header is missing.
-        secret: the shared secret. If None, reads from env WEBHOOK_SECRET.
+        secret: the shared secret. REQUIRED — callers pass Settings.webhook_secret.
+            If None or empty, raises WebhookSignatureError ("no secret configured")
+            rather than silently returning False. (Stage B Phase 1: removed the
+            unprefixed WEBHOOK_SECRET env fallback that masked misconfiguration.)
 
     Returns:
-        True if the signature is valid. False if missing, malformed, or
-        doesn't match.
+        True if the signature is valid. False if the signature is missing,
+        malformed, or doesn't match.
 
     Security:
         Uses hmac.compare_digest (constant-time comparison) to prevent
@@ -91,11 +97,8 @@ def verify_hmac(
         how many bytes match, allowing an attacker to brute-force the
         signature byte-by-byte.
     """
-    if secret is None:
-        secret = os.environ.get("WEBHOOK_SECRET", "")
-    if not secret:
-        return False  # No secret configured → reject all
-
+    if secret is None or not secret:
+        raise WebhookSignatureError("no secret configured")
     if signature is None or not signature:
         return False  # Missing signature header
 

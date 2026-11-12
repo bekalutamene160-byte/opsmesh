@@ -44,15 +44,24 @@ from opsmesh.config import get_settings
 
 @pytest.fixture(autouse=True)
 def clean_env():
-    """Ensure no auth env vars leak between tests."""
+    """Ensure no auth env vars leak between tests.
+
+    Stage B Phase 5: these tests exercise the Google OAuth flow, which is
+    gated on OPSMESH_ACCESS_MODE != 'single_user_demo'. The default is now
+    'single_user_demo' (dashboard opens with no login), so we explicitly
+    set access_mode=multi_user for this file to mount the OAuth router.
+    """
     for var in (
         "OPSMESH_SUPABASE_JWT_SECRET",
         "OPSMESH_SESSION_SECRET",
         "OPSMESH_GOOGLE_OAUTH_CLIENT_ID",
         "OPSMESH_GOOGLE_OAUTH_CLIENT_SECRET",
         "OPSMESH_PRODUCTION_MODE",
+        "OPSMESH_ACCESS_MODE",
     ):
         os.environ.pop(var, None)
+    # multi_user mode mounts the Google OAuth router under test.
+    os.environ["OPSMESH_ACCESS_MODE"] = "multi_user"
     get_settings.cache_clear()
     yield
     for var in (
@@ -61,6 +70,7 @@ def clean_env():
         "OPSMESH_GOOGLE_OAUTH_CLIENT_ID",
         "OPSMESH_GOOGLE_OAUTH_CLIENT_SECRET",
         "OPSMESH_PRODUCTION_MODE",
+        "OPSMESH_ACCESS_MODE",
     ):
         os.environ.pop(var, None)
     get_settings.cache_clear()
@@ -441,14 +451,21 @@ class TestSessionJwtFlow:
     def test_production_mode_without_auth_config_fails_closed(self, monkeypatch):
         """In production_mode=True with no auth configured → 401 on every request.
 
-        Note: production_mode ALSO requires database_path to be set. To keep
-        this test focused on auth fail-closed behavior (not the DB check),
-        we monkeypatch the settings to bypass the DB check while keeping
-        production_mode=True.
+        Stage B Phase 5: this test runs in multi_user mode (clean_env sets
+        OPSMESH_ACCESS_MODE=multi_user) so the OAuth router is mounted and
+        the fail-closed behavior is the multi-user prod path. In
+        single_user_demo mode there is no auth by design (dashboard opens
+        directly).
+
+        Stage B Phase 1 (P0-2): production_mode now also requires
+        OPSMESH_TALLY_WEBHOOK_SECRET (the Tally HMAC check is unconditional
+        in prod). Set it here so the startup check passes and the test
+        stays focused on the auth fail-closed behavior.
         """
         # Set up production_mode but with a database_path so create_app() boots
         os.environ["OPSMESH_PRODUCTION_MODE"] = "true"
         os.environ["OPSMESH_DATABASE_PATH"] = "/tmp/test-opsmesh-prod.db"
+        os.environ["OPSMESH_TALLY_WEBHOOK_SECRET"] = "test-tally-secret"
         # Remove any stale DB
         if os.path.exists("/tmp/test-opsmesh-prod.db"):
             os.remove("/tmp/test-opsmesh-prod.db")
@@ -463,6 +480,7 @@ class TestSessionJwtFlow:
         finally:
             os.environ.pop("OPSMESH_PRODUCTION_MODE", None)
             os.environ.pop("OPSMESH_DATABASE_PATH", None)
+            os.environ.pop("OPSMESH_TALLY_WEBHOOK_SECRET", None)
             # Clean up the test DB
             if os.path.exists("/tmp/test-opsmesh-prod.db"):
                 os.remove("/tmp/test-opsmesh-prod.db")

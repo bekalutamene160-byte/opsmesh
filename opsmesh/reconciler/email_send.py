@@ -56,9 +56,15 @@ class EmailSendReconciler:
         self,
         store: StateStore,
         email_provider: EmailProvider,
+        default_workspace_id: str = "default",
     ):
         self.store = store
         self.email_provider = email_provider
+        # Stage B Phase 3: the workspace to scan when run_once() is called
+        # without an explicit workspace_id. For the single-workspace demo this
+        # is settings.demo_workspace_id. For multi-workspace deploys, call
+        # run_once() once per workspace.
+        self.default_workspace_id = default_workspace_id
         self._running = False
         self._task: Optional[asyncio.Task] = None
 
@@ -67,26 +73,32 @@ class EmailSendReconciler:
 
         Args:
             workspace_id: if provided, only reconcile runs in this workspace.
-                If None, reconcile across all workspaces.
+                If None, uses default_workspace_id (the demo workspace for
+                single-workspace deploys).
 
         Returns:
             The number of runs resolved (transitioned to SENT or FAILED).
+
+        Stage B Phase 3 (P2-2): replaced the direct `self.store._runs` access
+        (which only worked for InMemoryStateStore) with the public
+        `list_in_state` interface. This works with any StateStore implementation
+        (InMemory, SQLite, Postgres).
         """
         resolved_count = 0
+        ws = workspace_id or self.default_workspace_id
 
-        # Find all runs in SEND_UNKNOWN state
-        # (InMemoryStateStore doesn't have a cross-workspace query, so we
-        # iterate all runs. Day 6's PostgresStateStore will use a WHERE clause.)
-        if hasattr(self.store, '_runs'):
-            for run_id, run in list(self.store._runs.items()):
-                if workspace_id and run.workspace_id != workspace_id:
-                    continue
-                if run.state != State.SEND_UNKNOWN:
-                    continue
+        try:
+            runs = await self.store.list_in_state(
+                ws, State.SEND_UNKNOWN.value, limit=100
+            )
+        except Exception:
+            # Store doesn't support list_in_state or returned an error — no-op.
+            return 0
 
-                resolved = await self._reconcile_run(run)
-                if resolved:
-                    resolved_count += 1
+        for run in runs:
+            resolved = await self._reconcile_run(run)
+            if resolved:
+                resolved_count += 1
 
         return resolved_count
 
@@ -148,7 +160,12 @@ class EmailSendReconciler:
                     f"Email send status unknown after {MAX_RECONCILIATION_ATTEMPTS} "
                     f"reconciliation attempts. Manual investigation required."
                 )
-                await self.store.save_checkpoint(run)
+            # Stage B Phase 3 (P2-2): ALWAYS persist the incremented counter.
+            # The old code only saved on escalation, so attempts 1-4 were lost
+            # when list_in_state started returning deep copies (the in-memory
+            # mutation didn't reach the store). Without this, the counter never
+            # reaches MAX_RECONCILIATION_ATTEMPTS.
+            await self.store.save_checkpoint(run)
             return False
 
     async def start_in_background(

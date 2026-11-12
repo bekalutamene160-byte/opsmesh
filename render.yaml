@@ -29,6 +29,18 @@ services:
         fromDatabase:
           name: opsmesh-db
           property: connectionString
+      # --- Access mode (Stage B Phase 5) ---
+      - key: OPSMESH_ACCESS_MODE
+        value: single_user_demo
+      - key: OPSMESH_DEMO_WORKSPACE_ID
+        value: default
+      # --- Demo-mode safety guards (Stage B Phase 1) ---
+      # Set to your Resend account's verified test recipient before going live.
+      - key: OPSMESH_EMAIL_TEST_RECIPIENT
+        sync: false
+      - key: OPSMESH_CRM_DEMO_MODE
+        value: read_only
+      # --- Providers ---
       - key: OPSMESH_LLM_PROVIDER
         value: groq
       - key: OPSMESH_LLM_API_KEY
@@ -49,16 +61,22 @@ services:
         value: hubspot
       - key: OPSMESH_CRM_API_KEY
         sync: false
+      # --- Webhook HMAC (REQUIRED in production_mode) ---
       - key: OPSMESH_WEBHOOK_SECRET
         sync: false
-      - key: OPSMESH_SESSION_SECRET
+      - key: OPSMESH_TALLY_WEBHOOK_SECRET
         sync: false
-      - key: OPSMESH_GOOGLE_OAUTH_CLIENT_ID
-        sync: false
+      # --- Sender identity (Resend pre-verified test sender) ---
+      - key: OPSMESH_WORKSPACE_SENDER_IDENTITY
+        value: "OpsMesh <onboarding@resend.dev>"
+      # --- CORS (empty = same-origin only; the frontend is served at /ui) ---
       - key: OPSMESH_CORS_ALLOWED_ORIGINS
-        value: "*"  # Update with your domain after deployment
+        value: ""
       - key: OPSMESH_PRODUCTION_MODE
         value: "true"
+      # NOTE: OPSMESH_GOOGLE_OAUTH_* and OPSMESH_SESSION_SECRET are NOT set —
+      # they are only used in OPSMESH_ACCESS_MODE=multi_user. The demo opens
+      # directly to the dashboard with no login.
 
   # ---------------------------------------------------------------------------
   # Worker service (background)
@@ -74,6 +92,14 @@ services:
         fromDatabase:
           name: opsmesh-db
           property: connectionString
+      - key: OPSMESH_ACCESS_MODE
+        value: single_user_demo
+      - key: OPSMESH_DEMO_WORKSPACE_ID
+        value: default
+      - key: OPSMESH_EMAIL_TEST_RECIPIENT
+        sync: false
+      - key: OPSMESH_CRM_DEMO_MODE
+        value: read_only
       - key: OPSMESH_LLM_PROVIDER
         value: groq
       - key: OPSMESH_LLM_API_KEY
@@ -96,5 +122,7 @@ services:
         sync: false
       - key: OPSMESH_WEBHOOK_SECRET
         sync: false
-      - key: OPSMESH_SESSION_SECRET
+      - key: OPSMESH_TALLY_WEBHOOK_SECRET
         sync: false
+      - key: OPSMESH_WORKSPACE_SENDER_IDENTITY
+        value: "OpsMesh <onboarding@resend.dev>"

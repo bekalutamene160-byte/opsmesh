@@ -40,41 +40,69 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, TypeAdapter, ValidationError
 
+from opsmesh.api.rate_limit import TALLY_LIMIT, limiter
+from opsmesh.config import get_settings, is_demo_mode, resolve_bound_workspace
 from opsmesh.models import LeadSource
 from opsmesh.services.lead_intake import (
     DuplicateSubmission,
     LeadIntakeService,
     SuppressedEmail,
 )
-from opsmesh.webhook import verify_hmac
+from opsmesh.webhook import verify_hmac, WebhookSignatureError
 
+
+logger = logging.getLogger(__name__)
+
+# Pydantic v2: EmailStr is a type, not a callable. Use a TypeAdapter to
+# validate a plain string against the EmailStr constraints.
+_EMAIL_ADAPTER = TypeAdapter(EmailStr)
 
 router = APIRouter(prefix="/api/v1", tags=["tally"])
 
 # Module-level references
 _intake_service: Optional[LeadIntakeService] = None
 _tally_secret: str = ""
+_workspace_id: str = "default"
 
 
 def configure_tally_route(
     intake_service: LeadIntakeService,
     tally_secret: str,
+    workspace_id: Optional[str] = None,
 ) -> None:
     """Configure the Tally webhook route.
 
-    If tally_secret is empty, signature verification is SKIPPED (dev mode).
-    If tally_secret is set, the signature is verified on raw bytes.
+    Stage B Phase 1 (P0-2): the HMAC check is UNCONDITIONAL when a secret is
+    configured. In production_mode, a missing secret fails-closed at startup
+    (app.py) AND at request time (401). In dev/demo mode with no secret,
+    verification is skipped for local testing only — prod can never reach
+    that state because the startup check rejects it.
+
+    Stage B Phase 1 (P0-6): the workspace is bound server-side to
+    `settings.demo_workspace_id` (in single_user_demo mode) and NEVER taken
+    from the request body.
     """
-    global _intake_service, _tally_secret
+    global _intake_service, _tally_secret, _workspace_id
     _intake_service = intake_service
-    # Only set the secret if it's non-empty AND not the same as the generic
-    # webhook secret (which would be confusing). If empty, no verification.
-    _tally_secret = tally_secret if tally_secret else ""
+    _tally_secret = tally_secret or ""
+    # Resolve the server-bound workspace. In demo mode this is the configured
+    # demo workspace; the browser cannot override it.
+    if workspace_id is not None:
+        _workspace_id = workspace_id
+    else:
+        try:
+            _workspace_id = resolve_bound_workspace()
+        except RuntimeError:
+            # multi_user mode: workspace resolution is the auth layer's job;
+            # the Tally webhook is unauthenticated, so bind to "default" only
+            # if explicitly in multi_user mode (rare for webhook intake).
+            _workspace_id = "default"
 
 
 def normalize_tally_payload(raw_body: bytes) -> dict:
@@ -161,6 +189,10 @@ def normalize_tally_payload(raw_body: bytes) -> dict:
 
     submission_id = data.get("submissionId", data.get("eventId", ""))
 
+    # Stage B Phase 1 (P0-2): validate contact_email format. An unsigned/loose
+    # Tally payload must not inject an arbitrary string into the email pipeline.
+    # EmailStr validation runs in the route handler (below) via _validate_email;
+    # here we just normalize to None when empty.
     return {
         "lead_type": lead_type,
         "company": company,
@@ -174,12 +206,34 @@ def normalize_tally_payload(raw_body: bytes) -> dict:
     }
 
 
+def _validate_email(email: str) -> str:
+    """Validate a contact email using Pydantic EmailStr.
+
+    Raises HTTPException(422) if the email is malformed. This is the P0-2
+    defense: the Tally `contact_email` field had no validation, so an
+    attacker could inject arbitrary strings into the email pipeline.
+    """
+    if not email:
+        raise HTTPException(422, "Tally payload missing required field: email")
+    try:
+        validated = _EMAIL_ADAPTER.validate_python(email)
+    except (ValidationError, ValueError) as e:
+        raise HTTPException(422, f"Invalid contact_email: {str(e)[:120]}")
+    return str(validated)
+
+
 @router.post("/events/tally", status_code=202)
+@limiter.limit(TALLY_LIMIT)
 async def tally_webhook(request: Request):
     """Receive a Tally form submission webhook.
 
-    This endpoint does NOT require Bearer auth — it uses HMAC signature
-    verification instead (like the generic webhook).
+    Stage B Phase 1 (P0-2): HMAC signature verification is UNCONDITIONAL when
+    a secret is configured. In production_mode, a missing secret fails-closed
+    at startup (app.py) AND here (401). In dev/demo mode with no secret,
+    verification is skipped for local testing only.
+
+    Stage B Phase 1 (P0-6): the workspace is bound server-side to
+    `settings.demo_workspace_id`; the request body never supplies it.
     """
     if _intake_service is None:
         raise HTTPException(503, "Lead intake service not configured")
@@ -187,15 +241,27 @@ async def tally_webhook(request: Request):
     # 1. Read the RAW body
     raw_body = await request.body()
 
-    # 2. Verify the signature on raw bytes
-    # Tally uses the 'tally-signature' header (verify at deploy time)
+    # 2. Verify the signature on raw bytes (UNCONDITIONAL when secret is set).
+    #    Tally uses the 'tally-signature' header (verify at deploy time).
     signature = request.headers.get("tally-signature") or request.headers.get(
         "X-Tally-Signature", ""
     )
 
+    settings = get_settings()
     if _tally_secret:
-        if not verify_hmac(raw_body, signature, secret=_tally_secret):
-            raise HTTPException(401, "Invalid Tally signature")
+        # Secret configured → ALWAYS verify. No skip path.
+        try:
+            if not verify_hmac(raw_body, signature, secret=_tally_secret):
+                raise HTTPException(401, "Invalid Tally signature")
+        except WebhookSignatureError:
+            # verify_hmac raises this only when the secret is empty — but we
+            # already checked _tally_secret above, so this is unreachable.
+            raise HTTPException(401, "Tally signature verification failed")
+    elif settings.production_mode:
+        # Prod mode with NO secret — defense-in-depth (startup should have
+        # caught this). Reject fail-closed.
+        raise HTTPException(401, "Tally webhook secret not configured")
+    # else: dev/demo mode with no secret → skip verification (local testing).
 
     # 3. Normalize the payload
     try:
@@ -203,23 +269,21 @@ async def tally_webhook(request: Request):
     except Exception as e:
         raise HTTPException(400, f"Failed to parse Tally payload: {str(e)[:200]}")
 
+    # 4. Validate the contact email (P0-2: no arbitrary strings into the pipeline)
+    normalized["contact_email"] = _validate_email(normalized["contact_email"])
+
     # For company leads, require company + email. For individual leads,
     # only require email (the person may not have a company).
-    if not normalized["contact_email"]:
-        raise HTTPException(
-            422,
-            "Tally payload missing required field: email",
-        )
     if normalized["lead_type"] == "company" and not normalized["company"]:
         raise HTTPException(
             422,
             "Tally payload missing required field: company name (for company leads)",
         )
 
-    # 4. Create the lead
+    # 5. Create the lead — workspace is server-bound, never from the request.
     try:
         result = await _intake_service.create_lead(
-            workspace_id="default",
+            workspace_id=_workspace_id,
             lead_type=normalized["lead_type"],
             company=normalized["company"],
             contact_email=normalized["contact_email"],

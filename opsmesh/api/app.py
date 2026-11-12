@@ -43,7 +43,7 @@ from opsmesh.api.routes.integrations import router as integrations_router
 from opsmesh.api.routes.tally_webhook import configure_tally_route, router as tally_router
 from opsmesh.api.routes.activity import configure_activity_routes, router as activity_router
 from opsmesh.api.auth_google import router as auth_google_router
-from opsmesh.config import get_settings
+from opsmesh.config import get_settings, is_demo_mode
 from opsmesh.observability.logging import configure_logging
 from opsmesh.job_queue import InMemoryJobQueue
 from opsmesh.services.lead_intake import LeadIntakeService
@@ -74,9 +74,28 @@ def create_app(
     """
     settings = get_settings()
 
+    # Stage B Phase 8: validate the config at startup so misconfiguration is
+    # loud, not silent. Warnings are logged (not fatal) — the prod-mode
+    # fail-closed checks above handle the hard requirements.
+    from opsmesh.config import validate_config
+    _cfg_warnings = validate_config(settings)
+    for _w in _cfg_warnings:
+        logger.warning("config.warning: %s", _w)
+
     # Resolve the webhook secret
     if webhook_secret is None:
         webhook_secret = os.environ.get("OPSMESH_WEBHOOK_SECRET", "")
+
+    # Stage B Phase 1 (P0-6): in single_user_demo mode, the workspace is
+    # server-bound to settings.demo_workspace_id. The caller's explicit
+    # workspace_id arg still wins (tests pass it), but the default now comes
+    # from settings instead of a hardcoded "default".
+    if workspace_id == "default":
+        try:
+            from opsmesh.config import resolve_bound_workspace
+            workspace_id = resolve_bound_workspace()
+        except RuntimeError:
+            pass  # multi_user mode — keep "default" (auth layer overrides)
 
     # Resolve database config:
     #   1. If use_sqlite is explicitly set, use that.
@@ -96,6 +115,13 @@ def create_app(
         if not webhook_secret or "change-me" in webhook_secret:
             raise RuntimeError(
                 "PRODUCTION MODE: OPSMESH_WEBHOOK_SECRET must be set to a real value."
+            )
+        # Stage B Phase 1 (P0-2): Tally webhook secret must also be set in prod.
+        tally_secret = getattr(settings, "tally_webhook_secret", "")
+        if not tally_secret or "change-me" in tally_secret:
+            raise RuntimeError(
+                "PRODUCTION MODE: OPSMESH_TALLY_WEBHOOK_SECRET must be set to a real "
+                "value (the Tally HMAC check is unconditional in production)."
             )
 
     # Determine the backend
@@ -170,17 +196,38 @@ def create_app(
     # These are the durable logs for the Activity tab. They MUST be shared
     # between the API (which reads them for the Activity endpoint) and the
     # in-process worker (whose SendingSpecialist writes sent-email records).
+    #
+    # Stage B Phase 4: when a DB is configured (SQLite/Postgres), use the
+    # durable SQLite-backed stores so the Activity tab + lead memory survive
+    # process restarts. In-memory stores are dev/test only.
+    from opsmesh.adapters.db.connection import get_db_backend
     from opsmesh.sent_email_store import InMemorySentEmailStore
     from opsmesh.lead_history_store import InMemoryLeadHistoryStore
-    sent_email_store = InMemorySentEmailStore()
-    history_store = InMemoryLeadHistoryStore()
+    _backend = get_db_backend()
+    if _backend in ("sqlite", "postgres"):
+        from opsmesh.adapters.db.sqlite_activity_stores import (
+            SQLiteSentEmailStore, SQLiteLeadHistoryStore,
+        )
+        sent_email_store = SQLiteSentEmailStore()
+        history_store = SQLiteLeadHistoryStore()
+    else:
+        sent_email_store = InMemorySentEmailStore()
+        history_store = InMemoryLeadHistoryStore()
 
     # The actual DB init path (used by lifespan, or called eagerly for tests)
     db_init_path = database_path if store_type == "sqlite" else None
     db_init_url = settings.database_url if store_type == "postgres" else None
 
+    # Stage B Phase 4: durable contact-policy (suppression) store. When a DB
+    # is configured, suppression survives restarts. None for dev/test.
+    contact_policy_store = None
+    if _backend in ("sqlite", "postgres"):
+        from opsmesh.adapters.db.sqlite_activity_stores import SQLiteContactPolicyStore
+        contact_policy_store = SQLiteContactPolicyStore()
+
     intake_service = LeadIntakeService(
         store=store, queue=queue, lead_store=lead_store, history_store=history_store,
+        contact_policy_store=contact_policy_store,
     )
 
     # Build the ApprovalGate (Day 5 component)
@@ -199,13 +246,17 @@ def create_app(
     )
 
     # Configure routes with the dependencies
-    configure_webhook_route(intake_service, webhook_secret)
-    configure_leads_routes(intake_service, workspace_id)
+    configure_webhook_route(intake_service, webhook_secret, workspace_id=workspace_id)
+    configure_leads_routes(intake_service, workspace_id, store=store, queue=queue, lead_store=lead_store)
     configure_metrics_route(store, queue, workspace_id)
     configure_dashboard_route(store, queue, workspace_id)
     configure_approvals_route(approval_gate, queue=queue)
     configure_runs_route(store)
-    configure_tally_route(intake_service, getattr(settings, "tally_webhook_secret", ""))
+    configure_tally_route(
+        intake_service,
+        getattr(settings, "tally_webhook_secret", ""),
+        workspace_id=workspace_id,
+    )
     configure_activity_routes(sent_email_store, history_store, workspace_id)
 
     # Configure structured logging (JSON output with PII redaction)
@@ -248,11 +299,18 @@ def create_app(
                 sent_email_store=sent_email_store,
                 history_store=history_store,
             )
+            # Stage B Phase 3: pass the reconcilers (email-send recovery,
+            # approval-timeout expiry, CRM-outbox draining) to the Worker so
+            # they start alongside the job loop.
+            reconcilers = getattr(supervisor, "reconcilers", [])
             in_process_worker = Worker(
                 queue=queue,
                 supervisor=supervisor,
                 worker_id=f"in_process_{os.getpid()}",
+                reconcilers=reconcilers,
             )
+            app.state.worker = in_process_worker
+            app.state.outbox_store = getattr(supervisor, "outbox_store", None)
             await in_process_worker.start_in_background()
             logger.info(
                 "in_process_worker.started",
@@ -287,24 +345,62 @@ def create_app(
         lifespan=lifespan,
     )
 
-    # --- CORS middleware (Phase 4) ---
-    # Allows the frontend (served at /ui or a separate origin in dev) to
-    # call the API. In production, set OPSMESH_CORS_ALLOWED_ORIGINS to the
-    # exact frontend origin. Default: permissive for local dev.
-    cors_origins = (
-        os.environ.get("OPSMESH_CORS_ALLOWED_ORIGINS", "")
-        or "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173"
-    )
-    allowed_origins = [
-        o.strip() for o in cors_origins.split(",") if o.strip()
-    ]
+    # --- Rate limiting (Stage B Phase 1, P0-5) ---
+    # slowapi with an in-memory backend. Per-IP throttling on public write
+    # endpoints (POST /events/*, POST /leads, POST /demo/simulate). For
+    # multi-worker prod, swap the storage_uri for Redis (documented in the
+    # deployment notes). The shared limiter singleton lives in
+    # opsmesh.api.rate_limit so route decorators can reference it at import
+    # time; here we attach it to app.state and register the middleware +
+    # the 429 exception handler.
+    from slowapi.errors import RateLimitExceeded
+    from slowapi.middleware import SlowAPIMiddleware
+    from fastapi.responses import JSONResponse as _JSONResponse
+    from opsmesh.api.rate_limit import limiter
+
+    app.state.limiter = limiter
+
+    @app.exception_handler(RateLimitExceeded)
+    async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+        return _JSONResponse(
+            status_code=429,
+            content={
+                "error": {
+                    "code": "rate_limited",
+                    "message": "Too many requests. Please slow down.",
+                }
+            },
+        )
+
+    # --- CORS middleware (Stage B Phase 1, P1-1) ---
+    # The frontend is served same-origin at /ui, so the demo needs NO CORS
+    # origins. Read from Settings.cors_allowed_origins (comma-separated).
+    # Wildcard "*" is rejected in single_user_demo mode (it is incompatible
+    # with credentials and signals an unsafe permissive posture). After OAuth
+    # removal, allow_credentials is False — there is no session cookie/JWT to
+    # send cross-origin.
+    cors_origins = settings.cors_allowed_origins or ""
+    if not cors_origins:
+        # Default: same-origin only. Allow localhost dev origins for local dev.
+        cors_origins = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173"
+    allowed_origins = [o.strip() for o in cors_origins.split(",") if o.strip()]
+    # Reject wildcard in demo mode (defense-in-depth).
+    if is_demo_mode(settings) and "*" in allowed_origins:
+        logger.warning(
+            "CORS wildcard '*' rejected in single_user_demo mode; using "
+            "same-origin only. Set OPSMESH_CORS_ALLOWED_ORIGINS to explicit origins."
+        )
+        allowed_origins = []
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
-        allow_credentials=True,
+        allow_credentials=False,  # no OAuth → no session cookie to send cross-origin
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Signature", "tally-signature", "X-Tally-Signature"],
     )
+    # slowapi middleware must be added AFTER CORS so the rate-limit response
+    # handler runs inside the CORS layer.
+    app.add_middleware(SlowAPIMiddleware)
 
     # --- Global exception handler (Phase 4) ---
     # Any uncaught exception returns a structured {"error": {"code", "message"}}
@@ -340,7 +436,12 @@ def create_app(
     app.include_router(integrations_router)
     app.include_router(tally_router)
     app.include_router(activity_router)
-    app.include_router(auth_google_router)
+    # Stage B Phase 5: Google OAuth is gated on access_mode. In
+    # single_user_demo mode (the default), the OAuth router is NOT mounted —
+    # visiting / opens the dashboard directly. The auth_google.py module
+    # stays in the tree so re-enabling multi-user auth is a config flip.
+    if not is_demo_mode(settings):
+        app.include_router(auth_google_router)
 
     # Health endpoints (Engineering Contract §1: /health always 200)
     @app.get("/health", tags=["health"])
@@ -367,11 +468,21 @@ def create_app(
         google_client_id = s.google_oauth_client_id
         session_secret = s.session_secret
         auth_configured = bool(google_client_id) and bool(session_secret)
+        # Stage B Phase 5: report the access_mode so the frontend knows
+        # whether to show a login gate. In single_user_demo mode the
+        # dashboard opens with no auth.
+        if is_demo_mode(s):
+            auth_mode = "demo"
+        elif auth_configured:
+            auth_mode = "google_oauth"
+        else:
+            auth_mode = "dev"
         return {
             "status": "ok",
             "store": store_type,
             "queue": queue_type,
             "production_mode": s.production_mode,
+            "access_mode": s.access_mode,
             "database_path": s.database_path or "(in-memory)",
             "providers": {
                 "llm": s.llm_provider,
@@ -380,13 +491,44 @@ def create_app(
                 "crm": s.crm_provider,
             },
             "auth": {
-                "mode": "google_oauth" if auth_configured else "dev",
+                "mode": auth_mode,
+                "access_mode": s.access_mode,
                 "google_oauth_configured": bool(google_client_id),
                 "session_secret_configured": bool(session_secret),
                 # Backward-compat field for older frontends
                 "jwt_secret_configured": bool(session_secret),
             },
             "email_kill_switch": s.email_kill_switch,
+            "crm_demo_mode": s.crm_demo_mode,
+        }
+
+    # --- Worker status endpoint (Stage B Phase 3) ---
+    @app.get("/api/v1/worker/status", tags=["worker"])
+    async def worker_status():
+        """Report the in-process worker + reconciler state.
+
+        Returns 200 with the worker snapshot (processed/failed counts,
+        reconciler names + running state). Returns 503 if no in-process
+        worker is configured (standalone worker mode — the worker is a
+        separate process, not visible here).
+        """
+        worker = getattr(app.state, "worker", None)
+        if worker is None:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "no_in_process_worker", "detail": "Worker runs as a separate process."},
+            )
+        return {
+            "status": "ok",
+            "worker": worker.status(),
+            "outbox": {
+                "pending": len(getattr(app.state, "outbox_store", None).list_pending())
+                if getattr(app.state, "outbox_store", None) is not None else 0,
+                "done": len(getattr(app.state, "outbox_store", None).list_done())
+                if getattr(app.state, "outbox_store", None) is not None else 0,
+                "dead_letter": len(getattr(app.state, "outbox_store", None).list_dead_letter())
+                if getattr(app.state, "outbox_store", None) is not None else 0,
+            },
         }
 
     # --- Mount the frontend at /ui (Phase 5) ---
@@ -401,10 +543,13 @@ def create_app(
             name="frontend",
         )
 
-        # Convenience: redirect / to the login page
+        # Stage B Phase 5: in single_user_demo mode, / opens the dashboard
+        # directly (no login). In multi_user mode, redirect to login.html.
         @app.get("/", include_in_schema=False)
         async def root_redirect():
             from fastapi.responses import RedirectResponse
+            if is_demo_mode():
+                return RedirectResponse(url="/ui/dashboard.html")
             return RedirectResponse(url="/ui/login.html")
 
     # Expose dependencies on app.state for tests + API routes

@@ -188,7 +188,7 @@ class TestEmailSendReconciler:
             EmailStatus(message_id="msg_test_001", status="confirmed_sent"),
         )
 
-        reconciler = EmailSendReconciler(store=store, email_provider=email)
+        reconciler = EmailSendReconciler(store=store, email_provider=email, default_workspace_id="ws_1")
         resolved = await reconciler.run_once()
 
         assert resolved == 1
@@ -210,7 +210,7 @@ class TestEmailSendReconciler:
             EmailStatus(message_id="msg_test_002", status="confirmed_failed"),
         )
 
-        reconciler = EmailSendReconciler(store=store, email_provider=email)
+        reconciler = EmailSendReconciler(store=store, email_provider=email, default_workspace_id="ws_1")
         resolved = await reconciler.run_once()
 
         assert resolved == 1
@@ -232,7 +232,7 @@ class TestEmailSendReconciler:
             EmailStatus(message_id="msg_test_003", status="unknown"),
         )
 
-        reconciler = EmailSendReconciler(store=store, email_provider=email)
+        reconciler = EmailSendReconciler(store=store, email_provider=email, default_workspace_id="ws_1")
         resolved = await reconciler.run_once()
 
         assert resolved == 0  # not resolved
@@ -257,7 +257,7 @@ class TestEmailSendReconciler:
             EmailStatus(message_id="msg_test_004", status="unknown"),
         )
 
-        reconciler = EmailSendReconciler(store=store, email_provider=email)
+        reconciler = EmailSendReconciler(store=store, email_provider=email, default_workspace_id="ws_1")
 
         # Run the reconciler MAX_RECONCILIATION_ATTEMPTS times
         for _ in range(MAX_RECONCILIATION_ATTEMPTS):
@@ -280,7 +280,7 @@ class TestEmailSendReconciler:
         # email_message_id is None (no send was attempted, or message_id was lost)
         await store.save_checkpoint(run)
 
-        reconciler = EmailSendReconciler(store=store, email_provider=email)
+        reconciler = EmailSendReconciler(store=store, email_provider=email, default_workspace_id="ws_1")
         resolved = await reconciler.run_once()
 
         assert resolved == 0  # not resolved

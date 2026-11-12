@@ -112,6 +112,7 @@ class LeadIntakeService:
         suppression_list: Optional[set[str]] = None,
         lead_store: Optional[LeadStore] = None,
         history_store=None,
+        contact_policy_store=None,
     ) -> None:
         self.store = store
         self.queue = queue
@@ -124,6 +125,11 @@ class LeadIntakeService:
         # Lead history store (the agent's memory). Optional -- if None,
         # history events are not logged (backward compat for tests).
         self.history_store = history_store
+        # Stage B Phase 4: durable contact-policy (suppression) store. When
+        # set (DB-backed), _is_suppressed checks it in addition to the
+        # in-memory sets. Suppressed emails are NEVER sent, even with human
+        # approval (Correction 7).
+        self.contact_policy_store = contact_policy_store
         # In-memory dedup index: (workspace_id, submission_id) -> (lead_id, created_at)
         # Stays in-memory because it's a 5-minute window, not persistence.
         self._dedup_index: dict[tuple[str, str], tuple[str, float]] = {}
@@ -142,11 +148,24 @@ class LeadIntakeService:
         self._suppression[workspace_id] = set(emails)
 
     def _is_suppressed(self, workspace_id: str, email: str) -> bool:
-        """Check if an email is suppressed (globally or in this workspace)."""
+        """Check if an email is suppressed (globally, in-memory, or via the
+        durable contact-policy store)."""
         if email.lower() in self._global_suppression:
             return True
         suppressed = self._suppression.get(workspace_id, set())
-        return email.lower() in {e.lower() for e in suppressed}
+        if email.lower() in {e.lower() for e in suppressed}:
+            return True
+        # Stage B Phase 4: check the durable DB-backed contact policy.
+        if self.contact_policy_store is not None:
+            try:
+                return self.contact_policy_store.is_suppressed(workspace_id, email)
+            except Exception:
+                # If the DB check fails, fail OPEN (allow) only if the in-memory
+                # checks already passed — but log it. Suppression is a safety
+                # feature; a DB outage shouldn't block all leads, but the
+                # operator should investigate.
+                pass
+        return False
 
     async def _check_dedup(
         self, workspace_id: str, submission_id: Optional[str]

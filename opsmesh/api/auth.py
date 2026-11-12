@@ -47,7 +47,7 @@ import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from opsmesh.config import get_settings
+from opsmesh.config import get_settings, is_demo_mode
 
 # Security scheme for Bearer token extraction
 security = HTTPBearer(auto_error=False)
@@ -75,19 +75,37 @@ async def get_current_user(
     """Verify the session JWT and return the user's identity.
 
     Returns a dict with:
-        - user_id: the user's ID (from JWT 'sub' claim)
+        - user_id: the user's ID (from JWT 'sub' claim, or 'demo_user')
         - email: the user's email
         - workspace_id: the workspace this user belongs to
+        - mode: 'demo' | 'dev' | 'google_oauth'
+
+    Stage B Phase 5 (P0: OAuth removal): in single_user_demo mode (the
+    default), NO authentication is performed. The dashboard opens directly.
+    Every request is bound server-side to settings.demo_workspace_id — the
+    browser never supplies the workspace_id. This is an explicitly
+    UNAUTHENTICATED DEMO mode, NOT secure for multi-tenant production.
+
+    In multi_user mode: requires a valid session JWT (HS256). The Google
+    OAuth router is mounted only in this mode. Re-enabling multi-user auth
+    is a config flip (OPSMESH_ACCESS_MODE=multi_user) — no code changes.
 
     Raises:
-        401 Unauthorized if the token is missing, expired, or invalid.
-
-    DEV MODE: When google_oauth_client_id is not set AND production_mode
-    is False, this function returns a default dev user. This allows local
-    development without Google OAuth. In production_mode=True, this
-    fallback is DISABLED.
+        401 Unauthorized if the token is missing, expired, or invalid
+        (multi_user mode only).
     """
     settings = get_settings()
+
+    # Stage B Phase 5: single_user_demo mode — no auth, no token required.
+    # This short-circuits BEFORE any JWT verification, even in production_mode.
+    # The demo is an open dashboard bound to one server-side workspace.
+    if is_demo_mode(settings):
+        return {
+            "user_id": "demo_user",
+            "email": settings.workspace_owner_email or "demo@opsmesh.dev",
+            "workspace_id": settings.demo_workspace_id or "default",
+            "mode": "demo",
+        }
 
     # Resolve the session secret (HS256) used to sign OUR session JWTs
     session_secret = _resolve_session_secret()
@@ -96,7 +114,7 @@ async def get_current_user(
     # Determine the auth mode
     auth_configured = bool(google_client_id) and bool(session_secret)
 
-    # DEV MODE: auth not configured → return default dev user
+    # DEV MODE (multi_user + no OAuth configured): return default dev user
     if not auth_configured:
         if settings.production_mode:
             raise HTTPException(
@@ -111,6 +129,7 @@ async def get_current_user(
             "user_id": "dev_user",
             "email": "dev@opsmesh.dev",
             "workspace_id": "default",
+            "mode": "dev",
         }
 
     # PRODUCTION: verify the session JWT (HS256, signed with session_secret)

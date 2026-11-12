@@ -87,14 +87,23 @@ class TestInvalidSignatures:
         sig = compute_signature("sender-secret", raw_body)
         assert verify_hmac(raw_body, sig, secret="receiver-secret") is False
 
-    def test_no_secret_configured_returns_false(self):
-        """If WEBHOOK_SECRET env var is not set, all webhooks are rejected."""
-        # No secret passed AND env var not set → returns False
-        # (we don't actually unset the env var here to avoid side effects;
-        # we pass secret="" directly)
+    def test_no_secret_configured_raises(self):
+        """Stage B Phase 1 (P2-3): an empty/unset secret raises
+        WebhookSignatureError instead of silently returning False.
+
+        The caller MUST pass Settings.webhook_secret explicitly. The old
+        unprefixed WEBHOOK_SECRET env fallback that masked misconfiguration
+        was removed; verify_hmac no longer reads env vars on the caller's
+        behalf. Fail-closed is the correct behavior — a misconfigured
+        secret should be loud, not silently reject every webhook.
+        """
         raw_body = b'{"x":1}'
         sig = compute_signature(SECRET, raw_body)
-        assert verify_hmac(raw_body, sig, secret="") is False
+        from opsmesh.webhook import WebhookSignatureError
+        with pytest.raises(WebhookSignatureError, match="no secret configured"):
+            verify_hmac(raw_body, sig, secret="")
+        with pytest.raises(WebhookSignatureError, match="no secret configured"):
+            verify_hmac(raw_body, sig, secret=None)
 
 
 # ---------------------------------------------------------------------------

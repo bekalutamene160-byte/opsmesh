@@ -99,10 +99,14 @@ class TestStaticAssetsReachable:
         # StaticFiles(html=True) serves index.html for directory requests
         assert r.status_code in (200, 307)
 
-    def test_root_redirects_to_login(self, client):
+    def test_root_redirects_to_dashboard_in_demo_mode(self, client):
+        """Stage B Phase 5: in single_user_demo mode (the default), visiting /
+        opens the dashboard directly — no login redirect. Google OAuth is
+        removed for the demo release.
+        """
         r = client.get("/", follow_redirects=False)
         assert r.status_code == 307
-        assert r.headers.get("location") == "/ui/login.html"
+        assert r.headers.get("location") == "/ui/dashboard.html"
 
 
 # ===========================================================================
@@ -185,8 +189,13 @@ class TestHtmlStructure:
             assert '/ui/css/app.css' in r.text, f"{page} missing CSS link"
 
     def test_pages_load_app_js(self, client):
-        """Pages with interactivity must load /ui/js/app.js."""
-        for page in ["login.html", "dashboard.html", "leads.html", "runs.html",
+        """Pages with interactivity must load /ui/js/app.js.
+
+        Stage B Phase 5: login.html is now a pure redirect stub (no app.js) —
+        it does not need the API client because it immediately redirects to
+        the dashboard.
+        """
+        for page in ["dashboard.html", "leads.html", "runs.html",
                      "approvals.html", "integrations.html"]:
             r = client.get(f"/ui/{page}")
             assert '/ui/js/app.js' in r.text, f"{page} missing app.js"
@@ -199,55 +208,55 @@ class TestHtmlStructure:
             assert '/ui/js/shell.js' in r.text, f"{page} missing shell.js"
 
     def test_login_page_does_not_load_shell(self, client):
-        """The login page should NOT load shell.js (no sidebar)."""
+        """The login redirect stub should NOT load shell.js (no sidebar)."""
         r = client.get("/ui/login.html")
         assert "/ui/js/shell.js" not in r.text
 
 
 # ===========================================================================
-# 4. Login page behavior
+# 4. Login redirect stub (Stage B Phase 5: OAuth removed)
 # ===========================================================================
 
 
-class TestLoginPage:
-    def test_login_page_has_dev_block(self, client):
-        """Login page has the dev-mode block."""
-        r = client.get("/ui/login.html")
-        assert 'id="dev-block"' in r.text
+class TestLoginRedirect:
+    """Stage B Phase 5: login.html is now a pure redirect to the dashboard.
 
-    def test_login_page_has_prod_block(self, client):
-        """Login page has the production-mode block (Google Sign In)."""
-        r = client.get("/ui/login.html")
-        assert 'id="prod-block"' in r.text
+    Google OAuth is removed from the default (single_user_demo) deployment.
+    Visiting / opens the dashboard directly. login.html remains only to
+    redirect stale bookmarks/links. It must NOT contain any half-active
+    OAuth code (no GIS script, no google-btn, no /auth/google calls).
+    """
 
-    def test_login_page_calls_health_endpoint(self, client):
-        """Login page JS calls /api/v1/health to determine mode."""
+    def test_login_page_redirects_to_dashboard(self, client):
+        """login.html redirects to /ui/dashboard.html (meta refresh + JS)."""
         r = client.get("/ui/login.html")
-        assert "/api/v1/health" in r.text
-
-    def test_login_page_redirects_when_token_present(self, client):
-        """Login page checks for an existing token and redirects to dashboard."""
-        r = client.get("/ui/login.html")
-        # The script references the dashboard URL on authed state
         assert "/ui/dashboard.html" in r.text
 
-    def test_login_page_loads_google_gis_script(self, client):
-        """Login page loads Google Identity Services script."""
+    def test_login_page_has_no_google_gis_script(self, client):
+        """No Google Identity Services script ships in the demo."""
         r = client.get("/ui/login.html")
-        assert "accounts.google.com/gsi/client" in r.text
+        assert "accounts.google.com/gsi/client" not in r.text
 
-    def test_login_page_has_google_button_container(self, client):
-        """Login page has a #google-btn container for the GIS button."""
+    def test_login_page_has_no_google_button_container(self, client):
+        """No #google-btn container (OAuth UI removed)."""
         r = client.get("/ui/login.html")
-        assert 'id="google-btn"' in r.text
+        assert 'id="google-btn"' not in r.text
 
-    def test_login_page_calls_auth_google_endpoint(self, client):
-        """Login page JS calls /api/v1/auth/google/client-id."""
+    def test_login_page_has_no_dev_or_prod_blocks(self, client):
+        """No dev-block / prod-block (the mode-switching UI is gone)."""
         r = client.get("/ui/login.html")
-        assert "/api/v1/auth/google/client-id" in r.text
+        assert 'id="dev-block"' not in r.text
+        assert 'id="prod-block"' not in r.text
 
-    def test_login_page_has_loginWithGoogle_handler(self, client):
-        """The frontend JS has a loginWithGoogle method (in app.js)."""
+    def test_login_page_does_not_call_auth_google_endpoint(self, client):
+        """login.html does not reference the OAuth endpoint."""
+        r = client.get("/ui/login.html")
+        assert "/api/v1/auth/google" not in r.text
+
+    def test_app_js_still_has_loginWithGoogle_for_multi_user_mode(self, client):
+        """The loginWithGoogle method stays in app.js so multi_user mode
+        can be re-enabled by flipping OPSMESH_ACCESS_MODE (no frontend
+        rewrite needed). It is simply not invoked in demo mode."""
         r = client.get("/ui/js/app.js")
         assert "loginWithGoogle" in r.text
 
