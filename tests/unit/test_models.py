@@ -263,12 +263,23 @@ class TestLead:
         """Correction 7: 'scraped' is not a valid lead source."""
         assert not hasattr(LeadSource, "SCRAPED")
 
-    def test_empty_company_rejected(self):
-        with pytest.raises(ValidationError):
-            Lead(
-                workspace_id="ws_1", company="",
-                contact_email="r@e.com", source=LeadSource.MANUAL,
-            )
+    def test_empty_company_allowed_for_individual(self):
+        """Individual leads (lead_type='individual') may have no company.
+        Company leads default to lead_type='company' for backward compat."""
+        # Individual lead with no company -- valid
+        lead = Lead(
+            workspace_id="ws_1", company="",
+            contact_email="r@e.com", source=LeadSource.MANUAL,
+            lead_type="individual", contact_name="Jane Person",
+        )
+        assert lead.lead_type == "individual"
+        assert lead.company == ""
+        # Company lead -- lead_type defaults to "company"
+        lead2 = Lead(
+            workspace_id="ws_1", company="Acme",
+            contact_email="r@e.com", source=LeadSource.MANUAL,
+        )
+        assert lead2.lead_type == "company"
 
     def test_employees_range_constraint(self):
         with pytest.raises(ValidationError):

@@ -111,18 +111,50 @@ async def _load_lead(lead_store, run: RunRecord) -> Optional[Lead]:
 
 
 class ResearchSpecialist:
-    def __init__(self, llm: LLMProvider, research: Optional[ResearchProvider] = None, lead_store=None):
+    def __init__(self, llm: LLMProvider, research: Optional[ResearchProvider] = None,
+                 lead_store=None, history_store=None):
         self.llm = llm
         self.research = research
         self.lead_store = lead_store
+        self.history_store = history_store
 
     async def __call__(self, run: RunRecord, budget: Any = None, ctx: Any = None) -> ResearchResult:
         lead = await _load_lead(self.lead_store, run)
+        lead_type = getattr(lead, "lead_type", "company") if lead else "company"
         company = lead.company if lead else f"Company {run.lead_id[:8]}"
         industry = lead.industry if lead else "Technology"
         contact_email = lead.contact_email if lead else ""
+        contact_name = lead.contact_name if lead else ""
+        website = getattr(lead, "website", None) if lead else None
+        notes = getattr(lead, "notes", None) if lead else None
 
-        # Search for the ACTUAL COMPANY, not the lead_id
+        # --- Branch: company vs individual research ---
+        if lead_type == "individual":
+            result = await self._research_individual(
+                run, contact_name, contact_email, website, notes, industry
+            )
+        else:
+            result = await self._research_company(
+                run, company, industry, contact_email
+            )
+
+        # Log a history event (the agent's memory)
+        if self.history_store is not None:
+            from opsmesh.models import LeadHistoryEvent
+            target = company or contact_name or contact_email
+            await self.history_store.save(LeadHistoryEvent(
+                workspace_id=run.workspace_id,
+                lead_id=run.lead_id,
+                run_id=run.run_id,
+                event_type="research",
+                summary=f"Researched {lead_type} lead: {target}",
+                detail=result.summary[:500] if result.summary else None,
+            ))
+
+        return result
+
+    async def _research_company(self, run, company, industry, contact_email):
+        """Research a company lead (original behavior)."""
         query = f"{company} {industry} company overview"
         web_hits: list[WebSearchHit] = []
         if self.research is not None:
@@ -161,7 +193,6 @@ class ResearchSpecialist:
                 max_tokens=500,
                 temperature=0.0,
             )
-            # Track actual token usage + cost on the run record
             run.budget_used_tokens += getattr(response, "input_tokens", 0) + getattr(response, "output_tokens", 0)
             run.budget_used_cost_usd += getattr(response, "cost_usd", 0.0)
             run.budget_used_tool_calls += 1
@@ -201,6 +232,109 @@ class ResearchSpecialist:
             sufficient_for_qualification=sufficient,
         )
 
+    async def _research_individual(self, run, contact_name, contact_email,
+                                    website, notes, industry):
+        """Research an individual lead.
+
+        If the person has a website, research it to understand their context.
+        If not, use the notes/context they filled on the contact form.
+        The goal is to understand the person's situation so the draft email
+        can be personalized.
+        """
+        web_hits: list[WebSearchHit] = []
+        if website and self.research is not None:
+            # Research the person's website
+            query = f"{website} {contact_name or ''} about"
+            try:
+                web_hits = await self.research.web_search(query, max_results=5)
+            except Exception as e:
+                logger.warning(f"Research provider failed for individual: {e}")
+
+        search_context = ""
+        if web_hits:
+            search_context = "\n\nWeb search results:\n"
+            for hit in web_hits[:5]:
+                search_context += f"- {hit.title}: {hit.snippet}\n"
+
+        system_prompt = (
+            "You are a personal outreach research specialist. An individual "
+            "has filled a contact form. Research their context (from their "
+            "website if available, or from the details they provided) and "
+            "produce a concise summary to personalize the outreach. Respond as JSON:\n"
+            '{"summary": "...", "sufficient_for_qualification": true, '
+            '"missing_info": []}\n'
+            "Include: who they are, what they are looking for, and any relevant "
+            "context from their website or notes. Keep the summary under 200 words. "
+            "Default sufficient_for_qualification to true."
+        )
+        user_prompt = (
+            f"Contact name: {contact_name or 'Unknown'}\n"
+            f"Contact email: {contact_email}\n"
+            f"Website: {website or 'None provided'}\n"
+            f"Industry/interest: {industry or 'Unknown'}\n"
+            f"Notes from contact form: {notes or 'None provided'}"
+            f"{search_context}"
+        )
+
+        try:
+            response = await self.llm.chat(
+                messages=[
+                    Message(role="system", content=system_prompt),
+                    Message(role="user", content=user_prompt),
+                ],
+                max_tokens=500,
+                temperature=0.0,
+            )
+            run.budget_used_tokens += getattr(response, "input_tokens", 0) + getattr(response, "output_tokens", 0)
+            run.budget_used_cost_usd += getattr(response, "cost_usd", 0.0)
+            run.budget_used_tool_calls += 1
+
+            data = _extract_json(response.content)
+            if data:
+                summary = data.get("summary") or response.content[:200]
+                sufficient = data.get("sufficient_for_qualification", True)
+                missing = data.get("missing_info", [])
+            else:
+                summary = response.content[:200]
+                sufficient = True
+                missing = []
+        except Exception as e:
+            logger.error(f"LLM call failed in ResearchSpecialist (individual): {e}")
+            summary = f"Research completed for {contact_name or contact_email}."
+            sufficient = True
+            missing = []
+
+        summary = summary or f"Research for {contact_name or contact_email}."
+
+        evidence = [
+            EvidenceItem(
+                source="web" if web_hits else "form",
+                source_url=str(hit.url) if hasattr(hit, "url") else (website if website else None),
+                content=hit.snippet,
+                confidence="medium",
+                is_material=False,
+            )
+            for hit in web_hits[:5]
+        ]
+        # If no web hits but we have notes, add a lead-submitted evidence item
+        if not evidence and notes:
+            evidence = [
+                EvidenceItem(
+                    source="lead_submitted",
+                    source_url=website,
+                    content=notes[:500],
+                    confidence="high",
+                    is_material=True,
+                )
+            ]
+
+        return ResearchResult(
+            evidence=evidence,
+            missing_info=missing,
+            summary=summary,
+            sufficient_for_qualification=sufficient,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Qualify specialist
@@ -208,27 +342,49 @@ class ResearchSpecialist:
 
 
 class QualifySpecialist:
-    def __init__(self, llm: LLMProvider, lead_store=None):
+    def __init__(self, llm: LLMProvider, lead_store=None, history_store=None):
         self.llm = llm
         self.lead_store = lead_store
+        self.history_store = history_store
 
     async def __call__(self, run: RunRecord, budget: Any = None, ctx: Any = None) -> QualificationResult:
         lead = await _load_lead(self.lead_store, run)
+        lead_type = getattr(lead, "lead_type", "company") if lead else "company"
         company = lead.company if lead else f"Company {run.lead_id[:8]}"
+        contact_name = lead.contact_name if lead else ""
+        notes = getattr(lead, "notes", None) if lead else None
         research_summary = run.research.summary if run.research else ""
 
-        system_prompt = (
-            "You are a B2B lead qualification specialist. Given the company and "
-            "research, decide if they're a good fit. Respond as JSON:\n"
-            '{"status": "QUALIFIED", "score": 0.8, "reasoning": "...", '
-            '"matched_criteria": ["..."], "unmatched_criteria": [], "risk_flags": []}\n'
-            "Default to QUALIFIED unless there are clear disqualifying factors. "
-            "Keep reasoning under 100 words."
-        )
-        user_prompt = (
-            f"Company: {company}\n"
-            f"Research: {research_summary}"
-        )
+        if lead_type == "individual":
+            system_prompt = (
+                "You are a lead qualification specialist. An individual filled a "
+                "contact form. Given their context and research, decide if they are "
+                "a good fit to follow up with. Respond as JSON:\n"
+                '{"status": "QUALIFIED", "score": 0.8, "reasoning": "...", '
+                '"matched_criteria": ["..."], "unmatched_criteria": [], "risk_flags": []}\n'
+                "Default to QUALIFIED unless there are clear disqualifying factors. "
+                "Keep reasoning under 100 words."
+            )
+            user_prompt = (
+                f"Contact name: {contact_name or 'Unknown'}\n"
+                f"Notes: {notes or 'None'}\n"
+                f"Research: {research_summary}"
+            )
+            fallback_reasoning = f"Qualified individual {contact_name or lead.contact_email if lead else ''}."
+        else:
+            system_prompt = (
+                "You are a B2B lead qualification specialist. Given the company and "
+                "research, decide if they're a good fit. Respond as JSON:\n"
+                '{"status": "QUALIFIED", "score": 0.8, "reasoning": "...", '
+                '"matched_criteria": ["..."], "unmatched_criteria": [], "risk_flags": []}\n'
+                "Default to QUALIFIED unless there are clear disqualifying factors. "
+                "Keep reasoning under 100 words."
+            )
+            user_prompt = (
+                f"Company: {company}\n"
+                f"Research: {research_summary}"
+            )
+            fallback_reasoning = f"Qualified {company}."
 
         try:
             response = await self.llm.chat(
@@ -239,7 +395,6 @@ class QualifySpecialist:
                 max_tokens=300,
                 temperature=0.0,
             )
-            # Track actual token usage + cost on the run record
             run.budget_used_tokens += getattr(response, "input_tokens", 0) + getattr(response, "output_tokens", 0)
             run.budget_used_cost_usd += getattr(response, "cost_usd", 0.0)
             run.budget_used_tool_calls += 1
@@ -269,12 +424,35 @@ class QualifySpecialist:
             logger.error(f"LLM call failed in QualifySpecialist: {e}")
             status = "QUALIFIED"
             score = 0.7
-            reasoning = f"Qualified {company}."
+            reasoning = fallback_reasoning
             matched = []
             unmatched = []
             risks = []
 
-        reasoning = reasoning or f"Qualified {company}."
+        reasoning = reasoning or fallback_reasoning
+
+        # Save the score (0-100) on the Lead so it shows in the leads list
+        score_int = int(round(score * 100))
+        if lead is not None and self.lead_store is not None:
+            try:
+                lead.score = score_int
+                lead.updated_at = utcnow()
+                await self.lead_store.save(lead)
+            except Exception as e:
+                logger.warning(f"Failed to save lead score: {e}")
+
+        # Log a history event (the agent's memory)
+        if self.history_store is not None:
+            from opsmesh.models import LeadHistoryEvent
+            target = company or contact_name or (lead.contact_email if lead else "")
+            await self.history_store.save(LeadHistoryEvent(
+                workspace_id=run.workspace_id,
+                lead_id=run.lead_id,
+                run_id=run.run_id,
+                event_type="qualify",
+                summary=f"Qualified {lead_type} lead: {target} (score {score_int}/100, {status})",
+                detail=reasoning[:500],
+            ))
 
         return QualificationResult(
             status=status,
@@ -292,41 +470,87 @@ class QualifySpecialist:
 
 
 class DraftSpecialist:
-    def __init__(self, llm: LLMProvider, lead_store=None):
+    def __init__(self, llm: LLMProvider, lead_store=None, history_store=None):
         self.llm = llm
         self.lead_store = lead_store
+        self.history_store = history_store
 
     async def __call__(self, run: RunRecord, budget: Any = None, ctx: Any = None) -> DraftResult:
         lead = await _load_lead(self.lead_store, run)
+        lead_type = getattr(lead, "lead_type", "company") if lead else "company"
         company = lead.company if lead else f"Company {run.lead_id[:8]}"
         industry = lead.industry if lead else "Technology"
         contact_name = lead.contact_name if lead else "there"
         contact_email = lead.contact_email if lead else f"founder@{run.lead_id}.com"
+        website = getattr(lead, "website", None) if lead else None
+        notes = getattr(lead, "notes", None) if lead else None
         research_summary = run.research.summary if run.research else ""
         qualification = run.qualification.reasoning if run.qualification else ""
 
-        system_prompt = (
-            "You are a professional B2B outreach email writer. Write a personalized "
-            "cold email that is relevant, specific, and professional. Rules:\n"
-            "- Address the person by name if known\n"
-            "- Reference specific details from the research about their company\n"
-            "- Explain why you're reaching out (relevant to their industry/work)\n"
-            "- Include a clear, low-friction call to action\n"
-            "- Keep it concise (100-200 words)\n"
-            "- Professional tone, not salesy or generic\n"
-            "- Do NOT use placeholders like [Your Name]\n\n"
-            "Respond as JSON:\n"
-            '{"subject": "...", "body": "..."}\n'
-            "Do NOT include a recipient field — the system will use the lead's email."
-        )
-        user_prompt = (
-            f"Company: {company}\n"
-            f"Industry: {industry}\n"
-            f"Contact name: {contact_name}\n"
-            f"Contact email: {contact_email}\n"
-            f"Research: {research_summary}\n"
-            f"Qualification: {qualification}"
-        )
+        # --- Branch: company vs individual draft ---
+        if lead_type == "individual":
+            system_prompt = (
+                "You are a professional outreach email writer. An individual "
+                "filled a contact form on a connected website. Write a warm, "
+                "personalized reply that addresses their specific request. Rules:\n"
+                "- Address the person by name if known\n"
+                "- Reference what they asked about (from their notes/website)\n"
+                "- Be helpful and specific, not generic or salesy\n"
+                "- Include a clear next step (a question or an offer to help)\n"
+                "- Keep it concise (100-200 words)\n"
+                "- Professional, friendly tone\n"
+                "- Do NOT use placeholders like [Your Name]\n\n"
+                "Respond as JSON:\n"
+                '{"subject": "...", "body": "..."}\n'
+                "Do NOT include a recipient field -- the system will use the lead's email."
+            )
+            user_prompt = (
+                f"Contact name: {contact_name}\n"
+                f"Contact email: {contact_email}\n"
+                f"Website: {website or 'None provided'}\n"
+                f"Interest/industry: {industry or 'Unknown'}\n"
+                f"What they asked about (notes): {notes or 'Not specified'}\n"
+                f"Research: {research_summary}\n"
+                f"Qualification: {qualification}"
+            )
+            fallback_subject = f"Reaching out, {contact_name}" if contact_name != "there" else "Thanks for reaching out"
+            fallback_body = (
+                f"Hi {contact_name},\n\n"
+                f"Thanks for reaching out"
+                + (f" via {website}" if website else "")
+                + ". "
+                + (f"I saw your question about {notes[:100]}." if notes else "I'd love to learn more about what you're looking for.")
+                + " I'd be happy to help -- would you be open to a quick chat this week?\n\nBest regards"
+            )
+        else:
+            system_prompt = (
+                "You are a professional B2B outreach email writer. Write a personalized "
+                "cold email that is relevant, specific, and professional. Rules:\n"
+                "- Address the person by name if known\n"
+                "- Reference specific details from the research about their company\n"
+                "- Explain why you're reaching out (relevant to their industry/work)\n"
+                "- Include a clear, low-friction call to action\n"
+                "- Keep it concise (100-200 words)\n"
+                "- Professional tone, not salesy or generic\n"
+                "- Do NOT use placeholders like [Your Name]\n\n"
+                "Respond as JSON:\n"
+                '{"subject": "...", "body": "..."}\n'
+                "Do NOT include a recipient field -- the system will use the lead's email."
+            )
+            user_prompt = (
+                f"Company: {company}\n"
+                f"Industry: {industry}\n"
+                f"Contact name: {contact_name}\n"
+                f"Contact email: {contact_email}\n"
+                f"Research: {research_summary}\n"
+                f"Qualification: {qualification}"
+            )
+            fallback_subject = f"Following up on {company}"
+            fallback_body = (
+                f"Hi {contact_name},\n\nI came across {company} and was impressed "
+                f"by your work in {industry}. I'd love to connect and explore how "
+                f"we might help.\n\nBest regards"
+            )
 
         try:
             response = await self.llm.chat(
@@ -337,41 +561,52 @@ class DraftSpecialist:
                 max_tokens=500,
                 temperature=0.3,
             )
-            # Track actual token usage + cost on the run record
             run.budget_used_tokens += getattr(response, "input_tokens", 0) + getattr(response, "output_tokens", 0)
             run.budget_used_cost_usd += getattr(response, "cost_usd", 0.0)
             run.budget_used_tool_calls += 1
 
             data = _extract_json(response.content)
             if data:
-                subject = data.get("subject") or f"Following up on {company}"
+                subject = data.get("subject") or fallback_subject
                 body = data.get("body") or response.content[:200]
-                # ALWAYS use the lead's actual contact email — the LLM should
-                # NOT decide who to send to. This prevents fake/generated emails.
                 recipient = contact_email
             else:
-                subject = f"Following up on {company}"
+                subject = fallback_subject
                 body = response.content[:200]
                 recipient = contact_email
         except Exception as e:
             logger.error(f"LLM call failed in DraftSpecialist: {e}")
-            subject = f"Following up on {company}"
-            body = f"Hi {contact_name},\n\nI came across {company} and was impressed by your work in {industry}. I'd love to connect and explore how we might help.\n\nBest regards"
+            subject = fallback_subject
+            body = fallback_body
             recipient = contact_email
 
         # Ensure all Pydantic constraints are satisfied
-        subject = (subject or f"Following up on {company}")[:200]
-        body = body or f"Hi {contact_name}, I'd like to connect about {company}."
+        subject = (subject or fallback_subject)[:200]
+        body = body or fallback_body
         recipient = recipient or contact_email
         if len(recipient) < 3:
             recipient = contact_email
 
-        return DraftResult(
+        draft_result = DraftResult(
             subject=subject,
             body=body,
             recipient=recipient,
             claims=[],
         )
+
+        # Log a history event (the agent's memory)
+        if self.history_store is not None:
+            from opsmesh.models import LeadHistoryEvent
+            await self.history_store.save(LeadHistoryEvent(
+                workspace_id=run.workspace_id,
+                lead_id=run.lead_id,
+                run_id=run.run_id,
+                event_type="draft",
+                summary=f"Drafted email: {subject}",
+                detail=body[:500],
+            ))
+
+        return draft_result
 
 
 # ---------------------------------------------------------------------------
@@ -453,62 +688,100 @@ class CriticSpecialist:
 
 
 class SendingSpecialist:
-    def __init__(self, email_provider=None, settings=None, lead_store=None):
+    def __init__(self, email_provider=None, settings=None, lead_store=None,
+                 sent_email_store=None, history_store=None):
         self.email_provider = email_provider
         self.settings = settings
         self.lead_store = lead_store
+        self.sent_email_store = sent_email_store
+        self.history_store = history_store
 
     async def __call__(self, run: RunRecord, budget: Any = None, ctx: Any = None) -> dict:
         if run.draft is None:
             return {"status": "failed", "error": "No draft to send"}
 
+        # Resolve recipient + sender + content (needed for logging even on skip)
+        recipient = run.draft.recipient
+        lead = await _load_lead(self.lead_store, run)
+        if lead and "@" not in recipient:
+            recipient = lead.contact_email
+        from_address = getattr(
+            self.settings, "workspace_sender_identity", "Bekalu <bekalu@opsmesh.dev>"
+        )
+        body = run.draft.body[:2000]
+        subject = run.draft.subject[:200]
+        lead_type = getattr(lead, "lead_type", "company") if lead else "company"
+
+        # Helper: log the send attempt to the SentEmailStore (durable record)
+        async def _log(status, message_id=None):
+            if self.sent_email_store is not None:
+                from opsmesh.models import SentEmail
+                await self.sent_email_store.save(SentEmail(
+                    workspace_id=run.workspace_id,
+                    lead_id=run.lead_id,
+                    run_id=run.run_id,
+                    recipient=recipient,
+                    from_address=from_address,
+                    subject=subject,
+                    body=body,
+                    status=status,
+                    provider_message_id=message_id,
+                    lead_type=lead_type,
+                ))
+            # Also log a history event (the agent's memory)
+            if self.history_store is not None:
+                from opsmesh.models import LeadHistoryEvent
+                await self.history_store.save(LeadHistoryEvent(
+                    workspace_id=run.workspace_id,
+                    lead_id=run.lead_id,
+                    run_id=run.run_id,
+                    event_type="send",
+                    summary=f"Email {status}: {subject} -> {recipient}",
+                    detail=body[:500],
+                ))
+
         # Check kill switch
         if self.settings is not None and getattr(self.settings, "email_kill_switch", True):
-            logger.info("Email kill switch is ON — skipping actual send")
-            return {"status": "skipped", "message_id": f"mock_{run.run_id[:12]}"}
+            logger.info("Email kill switch is ON -- skipping actual send")
+            mock_id = f"mock_{run.run_id[:12]}"
+            await _log("skipped", mock_id)
+            return {"status": "skipped", "message_id": mock_id}
 
         # Mock mode (no provider)
         if self.email_provider is None:
-            return {"status": "sent", "message_id": f"mock_{run.run_id[:12]}"}
+            mock_id = f"mock_{run.run_id[:12]}"
+            await _log("sent", mock_id)
+            return {"status": "sent", "message_id": mock_id}
 
-        # Real send — create EmailMessage with VALID fields
+        # Real send -- create EmailMessage with VALID fields
         try:
             from opsmesh.adapters.email.base import EmailMessage
 
-            # Generate a valid approval_id (pattern: ap_ + 12 hex chars)
-            # run.pending_approval_id is None after the approval is consumed,
-            # so we generate one from the run_id.
             run_hex = run.run_id.replace("run_", "").replace("-", "")[:12]
             if len(run_hex) < 12:
                 run_hex = run_hex.ljust(12, "0")
             approval_id = f"ap_{run_hex}"
 
-            # Validate the recipient email — if invalid, use the lead's email
-            recipient = run.draft.recipient
-            lead = await _load_lead(self.lead_store, run)
-            if lead and "@" not in recipient:
-                recipient = lead.contact_email
-
-            # Ensure body is within limits
-            body = run.draft.body[:2000]
-            subject = run.draft.subject[:200]
-
             msg = EmailMessage(
                 to=recipient,
-                from_=getattr(self.settings, "workspace_sender_identity", "Bekalu <bekalu@opsmesh.dev>"),
+                from_=from_address,
                 subject=subject,
                 body=body,
                 approval_id=approval_id,
                 idempotency_key=f"idem_{run.run_id}",
             )
             result = await self.email_provider.send(msg)
+            await _log("sent", result.message_id)
             return {"status": "sent", "message_id": result.message_id}
         except asyncio.TimeoutError:
+            await _log("unknown")
             return {"status": "unknown", "error": "Send timed out"}
         except Exception as e:
-            logger.error(f"Email send failed: {e}")
-            # Don't fail the run — return "skipped" so the workflow continues
-            return {"status": "skipped", "error": str(e)[:200]}
+            # Log the real error so the operator can see it in the Activity tab.
+            # Return "failed" (not "skipped") so the run state reflects the failure.
+            logger.error(f"Email send failed: {type(e).__name__}: {e}")
+            await _log("failed")
+            return {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
 # ---------------------------------------------------------------------------
@@ -556,14 +829,29 @@ def build_specialists(
     email_provider=None,
     crm_provider=None,
     lead_store=None,
+    sent_email_store=None,
+    history_store=None,
 ) -> dict[str, Any]:
-    """Build all 6 specialists. Pass lead_store so they can load real lead data."""
+    """Build all 6 specialists.
+
+    Pass lead_store so they can load real lead data.
+    Pass sent_email_store so the SendingSpecialist logs every send to the
+    durable sent-email log (visible in the Activity tab).
+    Pass history_store so each specialist logs a LeadHistoryEvent after
+    it runs (the agent's memory -- visible in the Activity tab + lead detail).
+    """
     return {
-        "researching": ResearchSpecialist(llm=llm, research=research, lead_store=lead_store),
-        "qualifying": QualifySpecialist(llm=llm, lead_store=lead_store),
-        "drafting": DraftSpecialist(llm=llm, lead_store=lead_store),
+        "researching": ResearchSpecialist(llm=llm, research=research, lead_store=lead_store, history_store=history_store),
+        "qualifying": QualifySpecialist(llm=llm, lead_store=lead_store, history_store=history_store),
+        "drafting": DraftSpecialist(llm=llm, lead_store=lead_store, history_store=history_store),
         "critic": CriticSpecialist(llm=llm),
-        "sending": SendingSpecialist(email_provider=email_provider, settings=settings, lead_store=lead_store),
+        "sending": SendingSpecialist(
+            email_provider=email_provider,
+            settings=settings,
+            lead_store=lead_store,
+            sent_email_store=sent_email_store,
+            history_store=history_store,
+        ),
         "crm_updating": CRMUpdatingSpecialist(crm_provider=crm_provider, settings=settings, lead_store=lead_store),
     }
 

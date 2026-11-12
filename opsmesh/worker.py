@@ -277,12 +277,14 @@ def _build_default_worker() -> "Worker":
     )
 
 
-def build_in_process_supervisor(settings, store, approval_gate, lead_store):
+def build_in_process_supervisor(settings, store, approval_gate, lead_store,
+                                sent_email_store=None, history_store=None):
     """Build a Supervisor for in-process worker mode.
 
-    This reuses the SHARED store, approval_gate, and lead_store from the
-    API process so that leads, runs, and approvals are visible to BOTH
-    the API endpoints and the worker's specialists.
+    This reuses the SHARED store, approval_gate, lead_store, sent_email_store,
+    and history_store from the API process so that leads, runs, approvals,
+    sent-email logs, and history events are visible to BOTH the API endpoints
+    and the worker's specialists.
 
     Used when OPSMESH_WORKER_IN_PROCESS is "auto" (and the store is
     in-memory) or "true". This avoids the need for a separate worker
@@ -294,6 +296,8 @@ def build_in_process_supervisor(settings, store, approval_gate, lead_store):
         store: the SHARED StateStore (InMemoryStateStore or SQLiteStateStore).
         approval_gate: the SHARED ApprovalGate (contains the shared approval_store).
         lead_store: the SHARED LeadStore (so specialists see leads the API created).
+        sent_email_store: the SHARED SentEmailStore (so sends are logged and
+            visible in the Activity tab). Optional -- backward compat.
 
     Returns:
         A Supervisor ready to be passed to Worker(supervisor=...).
@@ -319,6 +323,8 @@ def build_in_process_supervisor(settings, store, approval_gate, lead_store):
         email_provider=email,
         crm_provider=crm,
         lead_store=lead_store,
+        sent_email_store=sent_email_store,
+        history_store=history_store,
     )
 
     return Supervisor(

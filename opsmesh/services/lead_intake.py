@@ -111,6 +111,7 @@ class LeadIntakeService:
         queue: JobQueueProtocol,
         suppression_list: Optional[set[str]] = None,
         lead_store: Optional[LeadStore] = None,
+        history_store=None,
     ) -> None:
         self.store = store
         self.queue = queue
@@ -120,6 +121,9 @@ class LeadIntakeService:
         # use that. For backward compat, if no lead_store and no DB configured,
         # use InMemoryLeadStore.
         self.lead_store: LeadStore = lead_store or create_lead_store()
+        # Lead history store (the agent's memory). Optional -- if None,
+        # history events are not logged (backward compat for tests).
+        self.history_store = history_store
         # In-memory dedup index: (workspace_id, submission_id) -> (lead_id, created_at)
         # Stays in-memory because it's a 5-minute window, not persistence.
         self._dedup_index: dict[tuple[str, str], tuple[str, float]] = {}
@@ -192,7 +196,7 @@ class LeadIntakeService:
         self,
         *,
         workspace_id: str,
-        company: str,
+        company: str = "",
         contact_email: str,
         contact_name: Optional[str] = None,
         industry: Optional[str] = None,
@@ -200,9 +204,16 @@ class LeadIntakeService:
         website: Optional[str] = None,
         source: LeadSource,
         submission_id: Optional[str] = None,
+        lead_type: str = "company",
+        notes: Optional[str] = None,
     ) -> "LeadIntakeResult":
         """
         Create a lead, initialize a run, and enqueue a job.
+
+        Supports both company leads (lead_type="company", company required)
+        and individual leads (lead_type="individual", company may be empty).
+        For individuals, the `notes` field carries the context they filled
+        on a connected contact form (e.g., what they want to order).
 
         Steps:
           1. Check dedup (if submission_id given). If duplicate, raise
@@ -212,7 +223,8 @@ class LeadIntakeService:
           4. Create a RunRecord (state=NEW), save checkpoint.
           5. Enqueue a Job.
           6. Record submission_id for future dedup.
-          7. Return LeadIntakeResult with lead_id, run_id, job_id.
+          7. Log a "create" history event (the agent's memory).
+          8. Return LeadIntakeResult with lead_id, run_id, job_id.
         """
         # 1. Dedup check (in-memory + DB)
         existing_lead_id = await self._check_dedup(workspace_id, submission_id)
@@ -226,12 +238,14 @@ class LeadIntakeService:
         # 3. Create the Lead (persist via LeadStore)
         lead = Lead(
             workspace_id=workspace_id,
+            lead_type=lead_type,
             company=company,
             contact_email=contact_email,
             contact_name=contact_name,
             industry=industry,
             employees=employees,
             website=website,
+            notes=notes,
             source=source,
             source_submission_id=submission_id,
             disposition=LeadDisposition.NEW,
@@ -252,6 +266,21 @@ class LeadIntakeService:
         # 6. Record submission for dedup
         if submission_id is not None:
             self._record_submission(workspace_id, submission_id, lead.id)
+
+        # 7. Log a "create" history event (the agent's memory)
+        if self.history_store is not None:
+            from opsmesh.models import LeadHistoryEvent
+            desc = (
+                f"New {lead_type} lead: {company or contact_name or contact_email}"
+            )
+            await self.history_store.save(LeadHistoryEvent(
+                workspace_id=workspace_id,
+                lead_id=lead.id,
+                run_id=run.run_id,
+                event_type="create",
+                summary=desc,
+                detail=notes if notes else None,
+            ))
 
         return LeadIntakeResult(
             lead_id=lead.id,

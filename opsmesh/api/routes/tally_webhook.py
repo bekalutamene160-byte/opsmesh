@@ -82,6 +82,10 @@ def normalize_tally_payload(raw_body: bytes) -> dict:
 
     Tally sends fields as an array of {key, value, label} objects.
     We extract company, contact_email, industry, etc. based on field labels.
+
+    Supports individual leads (no company) -- if the form has a "lead type"
+    field set to "individual", or if no company is provided but a name + email
+    are, the lead is treated as an individual.
     """
     data = json.loads(raw_body)
 
@@ -116,15 +120,39 @@ def normalize_tally_payload(raw_body: bytes) -> dict:
         fields.get("employees", "")
         or fields.get("company size", "")
     )
+    website = (
+        fields.get("website", "")
+        or fields.get("url", "")
+        or fields.get("domain", "")
+    )
+    # Free-form notes/context the person filled (what they want, their situation)
+    notes = (
+        fields.get("notes", "")
+        or fields.get("message", "")
+        or fields.get("what can we help with", "")
+        or fields.get("how can we help", "")
+        or fields.get("details", "")
+    )
+    # Lead type: explicit field, or auto-detect from company presence
+    lead_type_raw = (
+        fields.get("lead type", "")
+        or fields.get("are you submitting as", "")
+        or fields.get("submitting as", "")
+    ).lower()
+    if "individual" in lead_type_raw or "person" in lead_type_raw:
+        lead_type = "individual"
+    elif "company" in lead_type_raw or "business" in lead_type_raw:
+        lead_type = "company"
+    else:
+        # Auto-detect: if no company but we have a name, it's an individual
+        lead_type = "individual" if (not company and contact_name) else "company"
 
     # Parse employees (may be a string like "10-50")
     employees = None
     if employees_str:
         try:
-            # Try to parse as int
             employees = int(employees_str)
         except (ValueError, TypeError):
-            # If it's a range like "10-50", take the lower bound
             if "-" in employees_str:
                 try:
                     employees = int(employees_str.split("-")[0].strip())
@@ -134,11 +162,14 @@ def normalize_tally_payload(raw_body: bytes) -> dict:
     submission_id = data.get("submissionId", data.get("eventId", ""))
 
     return {
+        "lead_type": lead_type,
         "company": company,
         "contact_email": contact_email,
         "contact_name": contact_name or None,
         "industry": industry or None,
         "employees": employees,
+        "website": website or None,
+        "notes": notes or None,
         "submission_id": submission_id,
     }
 
@@ -172,21 +203,31 @@ async def tally_webhook(request: Request):
     except Exception as e:
         raise HTTPException(400, f"Failed to parse Tally payload: {str(e)[:200]}")
 
-    if not normalized["company"] or not normalized["contact_email"]:
+    # For company leads, require company + email. For individual leads,
+    # only require email (the person may not have a company).
+    if not normalized["contact_email"]:
         raise HTTPException(
             422,
-            "Tally payload missing required fields: company name and email",
+            "Tally payload missing required field: email",
+        )
+    if normalized["lead_type"] == "company" and not normalized["company"]:
+        raise HTTPException(
+            422,
+            "Tally payload missing required field: company name (for company leads)",
         )
 
     # 4. Create the lead
     try:
         result = await _intake_service.create_lead(
             workspace_id="default",
+            lead_type=normalized["lead_type"],
             company=normalized["company"],
             contact_email=normalized["contact_email"],
             contact_name=normalized.get("contact_name"),
             industry=normalized.get("industry"),
             employees=normalized.get("employees"),
+            website=normalized.get("website"),
+            notes=normalized.get("notes"),
             source=LeadSource.WEBHOOK,
             submission_id=normalized["submission_id"],
         )

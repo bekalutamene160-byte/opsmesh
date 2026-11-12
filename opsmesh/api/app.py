@@ -41,6 +41,7 @@ from opsmesh.api.routes.approvals import configure_approvals_route, router as ap
 from opsmesh.api.routes.runs import configure_runs_route, router as runs_router
 from opsmesh.api.routes.integrations import router as integrations_router
 from opsmesh.api.routes.tally_webhook import configure_tally_route, router as tally_router
+from opsmesh.api.routes.activity import configure_activity_routes, router as activity_router
 from opsmesh.api.auth_google import router as auth_google_router
 from opsmesh.config import get_settings
 from opsmesh.observability.logging import configure_logging
@@ -165,11 +166,22 @@ def create_app(
     from opsmesh.adapters.db.lead_store import create_lead_store
     lead_store = create_lead_store()
 
+    # Build the SHARED sent-email store + lead-history store.
+    # These are the durable logs for the Activity tab. They MUST be shared
+    # between the API (which reads them for the Activity endpoint) and the
+    # in-process worker (whose SendingSpecialist writes sent-email records).
+    from opsmesh.sent_email_store import InMemorySentEmailStore
+    from opsmesh.lead_history_store import InMemoryLeadHistoryStore
+    sent_email_store = InMemorySentEmailStore()
+    history_store = InMemoryLeadHistoryStore()
+
     # The actual DB init path (used by lifespan, or called eagerly for tests)
     db_init_path = database_path if store_type == "sqlite" else None
     db_init_url = settings.database_url if store_type == "postgres" else None
 
-    intake_service = LeadIntakeService(store=store, queue=queue, lead_store=lead_store)
+    intake_service = LeadIntakeService(
+        store=store, queue=queue, lead_store=lead_store, history_store=history_store,
+    )
 
     # Build the ApprovalGate (Day 5 component)
     # Phase 7: use create_approval_store() so the API and worker share the
@@ -194,6 +206,7 @@ def create_app(
     configure_approvals_route(approval_gate, queue=queue)
     configure_runs_route(store)
     configure_tally_route(intake_service, getattr(settings, "tally_webhook_secret", ""))
+    configure_activity_routes(sent_email_store, history_store, workspace_id)
 
     # Configure structured logging (JSON output with PII redaction)
     configure_logging()
@@ -232,6 +245,8 @@ def create_app(
                 store=store,
                 approval_gate=approval_gate,
                 lead_store=lead_store,
+                sent_email_store=sent_email_store,
+                history_store=history_store,
             )
             in_process_worker = Worker(
                 queue=queue,
@@ -324,6 +339,7 @@ def create_app(
     app.include_router(runs_router)
     app.include_router(integrations_router)
     app.include_router(tally_router)
+    app.include_router(activity_router)
     app.include_router(auth_google_router)
 
     # Health endpoints (Engineering Contract §1: /health always 200)
@@ -391,10 +407,14 @@ def create_app(
             from fastapi.responses import RedirectResponse
             return RedirectResponse(url="/ui/login.html")
 
-    # Expose dependencies on app.state for tests
+    # Expose dependencies on app.state for tests + API routes
     app.state.store = store
     app.state.queue = queue
     app.state.intake_service = intake_service
+    app.state.lead_store = lead_store
+    app.state.sent_email_store = sent_email_store
+    app.state.history_store = history_store
+    app.state.approval_gate = approval_gate
     # Backward-compat: use_sqlite is True if backend is sqlite, False otherwise.
     # (Phase 7 added use_postgres; use_sqlite is kept for existing tests.)
     app.state.use_sqlite = (store_type == "sqlite")

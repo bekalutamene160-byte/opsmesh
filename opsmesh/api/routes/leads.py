@@ -49,13 +49,19 @@ _workspace_id: str = "default"
 
 
 class CreateLeadRequest(BaseModel):
-    """Manual lead creation payload (POST /api/v1/leads)."""
-    company: str = Field(min_length=1, max_length=200)
+    """Manual lead creation payload (POST /api/v1/leads).
+
+    Supports both company leads (lead_type='company', company required)
+    and individual leads (lead_type='individual', company may be empty).
+    """
+    lead_type: str = Field(default="company", max_length=20)
+    company: str = Field(default="", max_length=200)
     contact_email: EmailStr
     contact_name: Optional[str] = Field(default=None, max_length=200)
     industry: Optional[str] = None
     employees: Optional[int] = Field(default=None, ge=1, le=1_000_000)
     website: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class CreateLeadResponse(BaseModel):
@@ -68,12 +74,15 @@ class CreateLeadResponse(BaseModel):
 class LeadDetailResponse(BaseModel):
     """Lead detail (GET /api/v1/leads/{lead_id})."""
     id: str
-    company: str
+    lead_type: str = "company"
+    company: str = ""
     contact_email: str
     contact_name: Optional[str] = None
     industry: Optional[str] = None
     employees: Optional[int] = None
     website: Optional[str] = None
+    notes: Optional[str] = None
+    score: Optional[int] = None
     source: str
     disposition: str
     created_at: str
@@ -82,10 +91,12 @@ class LeadDetailResponse(BaseModel):
 class LeadListItem(BaseModel):
     """One row in the leads list (GET /api/v1/leads)."""
     id: str
-    company: str
+    lead_type: str = "company"
+    company: str = ""
     contact_email: str
     contact_name: Optional[str] = None
     industry: Optional[str] = None
+    score: Optional[int] = None
     source: str
     disposition: str
     created_at: str
@@ -153,10 +164,12 @@ async def list_leads(
         "leads": [
             LeadListItem(
                 id=lead.id,
+                lead_type=lead.lead_type,
                 company=lead.company,
                 contact_email=lead.contact_email,
                 contact_name=lead.contact_name,
                 industry=lead.industry,
+                score=lead.score,
                 source=lead.source.value,
                 disposition=lead.disposition.value,
                 created_at=lead.created_at.isoformat(),
@@ -178,12 +191,14 @@ async def create_lead_manual(req: CreateLeadRequest):
     try:
         result = await _intake_service.create_lead(
             workspace_id=_workspace_id,
+            lead_type=req.lead_type,
             company=req.company,
             contact_email=str(req.contact_email),
             contact_name=req.contact_name,
             industry=req.industry,
             employees=req.employees,
             website=req.website,
+            notes=req.notes,
             source=LeadSource.MANUAL,
         )
     except SuppressedEmail:
@@ -210,12 +225,15 @@ async def get_lead(lead_id: str):
         raise HTTPException(status_code=404, detail="Lead not found")
     return LeadDetailResponse(
         id=lead.id,
+        lead_type=lead.lead_type,
         company=lead.company,
         contact_email=lead.contact_email,
         contact_name=lead.contact_name,
         industry=lead.industry,
         employees=lead.employees,
         website=lead.website,
+        notes=lead.notes,
+        score=lead.score,
         source=lead.source.value,
         disposition=lead.disposition.value,
         created_at=lead.created_at.isoformat(),

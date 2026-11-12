@@ -10,6 +10,7 @@
     { id: "leads",        href: "/ui/leads.html",          label: "Leads" },
     { id: "runs",         href: "/ui/runs.html",           label: "Runs" },
     { id: "approvals",    href: "/ui/approvals.html",      label: "Approvals" },
+    { id: "activity",     href: "/ui/activity.html",       label: "Activity" },
     { id: "integrations", href: "/ui/integrations.html",   label: "Integrations" },
   ];
 

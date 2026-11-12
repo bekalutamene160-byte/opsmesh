@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OPSMESH -- Activity</title>
+  <link rel="stylesheet" href="/ui/css/app.css?v=6">
+  <style>
+    .email-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+    .email-card .email-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .email-card .email-subj {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--text);
+    }
+    .email-card .email-meta {
+      font-size: 12px;
+      color: var(--text-mute);
+      margin-top: 2px;
+    }
+    .email-card .email-body {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 10px;
+      font-size: 13px;
+      color: var(--text-dim);
+      white-space: pre-wrap;
+      max-height: 120px;
+      overflow-y: auto;
+      margin-top: 8px;
+    }
+    .email-card .email-expand {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--accent);
+      cursor: pointer;
+      user-select: none;
+    }
+    .email-card .email-expand:hover {
+      text-decoration: underline;
+    }
+    .event-row {
+      display: flex;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      align-items: flex-start;
+    }
+    .event-row:last-child {
+      border-bottom: 0;
+    }
+    .event-row .event-icon {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .event-row .event-content {
+      flex: 1;
+    }
+    .event-row .event-summary {
+      font-size: 13px;
+      color: var(--text);
+    }
+    .event-row .event-time {
+      font-size: 11px;
+      color: var(--text-mute);
+      margin-top: 2px;
+    }
+    .event-row .event-detail {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-top: 4px;
+      padding: 6px 8px;
+      background: var(--bg);
+      border-radius: 4px;
+      white-space: pre-wrap;
+    }
+    .status-sent { background: rgba(46,204,113,0.15); color: var(--success); }
+    .status-skipped { background: rgba(154,163,178,0.15); color: var(--text-dim); }
+    .status-failed { background: rgba(231,76,60,0.15); color: var(--danger); }
+    .status-unknown { background: rgba(243,156,18,0.15); color: var(--warning); }
+    .icon-create { background: rgba(52,152,219,0.15); color: var(--info); }
+    .icon-research { background: rgba(155,89,182,0.15); color: var(--purple); }
+    .icon-qualify { background: rgba(52,152,219,0.15); color: var(--info); }
+    .icon-draft { background: rgba(243,156,18,0.15); color: var(--warning); }
+    .icon-critic { background: rgba(231,76,60,0.15); color: var(--danger); }
+    .icon-approve { background: rgba(46,204,113,0.15); color: var(--success); }
+    .icon-send { background: rgba(46,204,113,0.15); color: var(--success); }
+    .icon-crm_update { background: rgba(154,163,178,0.15); color: var(--text-dim); }
+    .icon-reject { background: rgba(231,76,60,0.15); color: var(--danger); }
+    .icon-default { background: rgba(154,163,178,0.15); color: var(--text-dim); }
+    .tab-bar {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab-bar .tab {
+      padding: 8px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--text-dim);
+      border-bottom: 2px solid transparent;
+      user-select: none;
+    }
+    .tab-bar .tab.active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div style="padding: 40px; text-align: center; color: #9aa3b2; font-family: sans-serif;">
+      <p style="font-size: 18px;">Loading OPSMESH...</p>
+    </div>
+  </div>
+
+  <script src="/ui/js/app.js?v=6"></script>
+  <script src="/ui/js/shell.js?v=6"></script>
+  <script>
+    (async function () {
+      try {
+        const ok = await OPSMESH.auth.requireAuth();
+        if (!ok) return;
+
+        const api = OPSMESH.api;
+        const ui = OPSMESH.ui;
+        var currentTab = "emails";
+
+        const root = document.getElementById("root");
+        root.innerHTML = OPSMESH.renderShell("activity", "" +
+          '<div class="page-header">' +
+            '<h1>Activity</h1>' +
+            '<div class="meta" id="generated-at">--</div>' +
+          "</div>" +
+          '<div class="tab-bar">' +
+            '<div class="tab active" id="tab-emails">Sent Emails</div>' +
+            '<div class="tab" id="tab-history">History</div>' +
+          "</div>" +
+          '<div id="content"></div>'
+        );
+        OPSMESH.attachShellHandlers();
+
+        document.getElementById("tab-emails").addEventListener("click", function () {
+          currentTab = "emails";
+          document.getElementById("tab-emails").className = "tab active";
+          document.getElementById("tab-history").className = "tab";
+          loadContent();
+        });
+        document.getElementById("tab-history").addEventListener("click", function () {
+          currentTab = "history";
+          document.getElementById("tab-history").className = "tab active";
+          document.getElementById("tab-emails").className = "tab";
+          loadContent();
+        });
+
+        async function loadContent() {
+          var el = document.getElementById("content");
+          if (currentTab === "emails") {
+            await loadEmails(el);
+          } else {
+            await loadHistory(el);
+          }
+        }
+
+        async function loadEmails(el) {
+          ui.showLoading(el.id);
+          try {
+            var data = await api.get("/api/v1/activity/emails", { limit: 50 });
+            var emails = data.emails || [];
+            document.getElementById("generated-at").textContent = emails.length + " sent emails";
+            if (emails.length === 0) {
+              ui.showEmpty(el.id, "No sent emails yet", "Create a lead, approve it, and the agent will send the email here.");
+              return;
+            }
+            el.innerHTML = emails.map(function (e) {
+              return '<div class="email-card">' +
+                '<div class="email-top">' +
+                  '<div>' +
+                    '<div class="email-subj">' + ui.escape(e.subject) + '</div>' +
+                    '<div class="email-meta">To: ' + ui.escape(e.recipient) + ' &middot; ' +
+                      '<span class="badge status-' + e.status + '">' + e.status + '</span>' +
+                      (e.lead_type === "individual" ? ' <span class="badge purple">individual</span>' : '') +
+                    '</div>' +
+                  '</div>' +
+                  '<div style="text-align:right; flex-shrink:0;">' +
+                    '<div style="font-size:12px; color:var(--text-mute);">' + ui.relativeTime(e.sent_at) + '</div>' +
+                    '<div style="font-size:11px; color:var(--text-mute); margin-top:2px;">' +
+                      '<a href="/ui/runs.html" style="font-size:11px;">run ' + (e.run_id || "").substring(0, 12) + '</a>' +
+                    '</div>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="email-body" id="body-' + e.id + '">' + ui.escape(e.body) + '</div>' +
+                '<div class="email-expand" data-email="' + e.id + '">Expand</div>' +
+              '</div>';
+            }).join("");
+            // Wire expand/collapse
+            el.querySelectorAll(".email-expand").forEach(function (btn) {
+              btn.addEventListener("click", function () {
+                var bodyEl = document.getElementById("body-" + this.getAttribute("data-email"));
+                if (bodyEl.style.maxHeight === "none") {
+                  bodyEl.style.maxHeight = "120px";
+                  this.textContent = "Expand";
+                } else {
+                  bodyEl.style.maxHeight = "none";
+                  this.textContent = "Collapse";
+                }
+              });
+            });
+          } catch (e) {
+            ui.showError(el.id, e.message);
+          }
+        }
+
+        async function loadHistory(el) {
+          ui.showLoading(el.id);
+          try {
+            var data = await api.get("/api/v1/activity/history", { limit: 50 });
+            var events = data.events || [];
+            document.getElementById("generated-at").textContent = events.length + " events";
+            if (events.length === 0) {
+              ui.showEmpty(el.id, "No activity yet", "Create a lead and the agent's actions will appear here.");
+              return;
+            }
+            var icons = {
+              create: "C", research: "R", qualify: "Q", draft: "D",
+              critic: "!", approve: "Y", send: "S", crm_update: "U", reject: "X"
+            };
+            el.innerHTML = '<div class="card">' + events.map(function (ev) {
+              var iconChar = icons[ev.event_type] || "?";
+              return '<div class="event-row">' +
+                '<div class="event-icon icon-' + ev.event_type + '">' + iconChar + '</div>' +
+                '<div class="event-content">' +
+                  '<div class="event-summary">' + ui.escape(ev.summary) +
+                    ' <span class="badge neutral" style="font-size:10px;">' + ev.event_type + '</span>' +
+                  '</div>' +
+                  '<div class="event-time">' + ui.relativeTime(ev.created_at) +
+                    ' &middot; lead <code>' + (ev.lead_id || "").substring(0, 12) + '</code>' +
+                  '</div>' +
+                  (ev.detail ? '<div class="event-detail">' + ui.escape(ev.detail.substring(0, 300)) + '</div>' : '') +
+                '</div>' +
+              '</div>';
+            }).join("") + '</div>';
+          } catch (e) {
+            ui.showError(el.id, e.message);
+          }
+        }
+
+        await loadContent();
+      } catch (err) {
+        document.getElementById("root").innerHTML =
+          '<div style="padding:40px;color:#e74c3c;">Failed to load: ' + (err.message || err) + '</div>';
+      }
+    })();
+  </script>
+</body>
+</html>

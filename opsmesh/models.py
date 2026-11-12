@@ -423,12 +423,24 @@ class Lead(BaseModel):
     id: str = Field(default_factory=lambda: f"lead_{uuid4().hex[:12]}")
     workspace_id: str
     crm_lead_id: Optional[str] = None  # set if external CRM is configured
-    company: str = Field(min_length=1, max_length=200)
+    # lead_type: "company" (default, backward compatible) or "individual".
+    # Individual leads may have no company -- they are people who filled
+    # a contact form on a connected website. Research uses the website
+    # if present, otherwise uses the notes/context the person provided.
+    lead_type: str = Field(default="company", max_length=20)
+    company: str = Field(default="", max_length=200)
     contact_email: str = Field(min_length=3)
     contact_name: Optional[str] = None
     industry: Optional[str] = None
     employees: Optional[int] = Field(default=None, ge=1, le=1_000_000)
     website: Optional[str] = None
+    # Free-form context the person filled (e.g., what they want to order,
+    # their situation, questions). Used by research + draft when there is
+    # no company website to analyze.
+    notes: Optional[str] = None
+    # Lead score 0-100, computed by the QualifySpecialist based on ICP fit,
+    # research signals, and engagement. None until qualification runs.
+    score: Optional[int] = Field(default=None, ge=0, le=100)
 
     source: LeadSource
     source_submission_id: Optional[str] = None  # for webhook dedup
@@ -497,6 +509,67 @@ class CRMOutboxOp(BaseModel):
     completed_at: Optional[datetime] = None
 
 
+# ---------------------------------------------------------------------------
+# SentEmail — durable log of every email the agent sent (Phase 8)
+# ---------------------------------------------------------------------------
+
+
+class SentEmail(BaseModel):
+    """
+    A durable record of an email the agent sent to a lead.
+
+    This is the source of truth for the Activity / Outbox tab. It captures
+    the full content (subject + body), the recipient, the provider's
+    message_id, and the send status -- so the operator can see exactly
+    what was sent, to whom, and when, without parsing run payloads.
+    """
+
+    model_config = ConfigDict()
+
+    id: str = Field(default_factory=lambda: f"se_{uuid4().hex[:12]}")
+    workspace_id: str
+    lead_id: str
+    run_id: str
+    recipient: str
+    from_address: str
+    subject: str
+    body: str
+    # "sent" (provider accepted), "skipped" (kill switch or no provider),
+    # "failed" (provider returned an error), "unknown" (timed out).
+    status: str = "sent"
+    provider_message_id: Optional[str] = None
+    lead_type: str = "company"
+    sent_at: datetime = Field(default_factory=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# LeadHistoryEvent — the agent's memory of every interaction with a lead
+# ---------------------------------------------------------------------------
+
+
+class LeadHistoryEvent(BaseModel):
+    """
+    A single event in the agent's interaction history with a lead.
+
+    Every pipeline step (research, qualify, draft, critic, approve, send,
+    crm_update) logs one event here. This gives the agent a durable memory
+    of what it did with each lead, visible in the Activity tab and on the
+    lead detail page. It also enables "remember the user's history" --
+    when a lead re-enters the pipeline, past events are available as context.
+    """
+
+    model_config = ConfigDict()
+
+    id: str = Field(default_factory=lambda: f"he_{uuid4().hex[:12]}")
+    workspace_id: str
+    lead_id: str
+    run_id: Optional[str] = None
+    event_type: str  # "research" | "qualify" | "draft" | "critic" | "approve" | "send" | "crm_update" | "reject" | "create"
+    summary: str = ""  # short human-readable description
+    detail: Optional[str] = None  # longer context (research summary, draft preview, etc.)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 __all__ = [
     "utcnow",
     # Enums
@@ -508,4 +581,6 @@ __all__ = [
     # Core
     "RunRecord", "ApprovalRecord", "Job", "IdempotencyRecord",
     "Lead", "ContactPolicy", "CRMOutboxOp",
+    # Phase 8
+    "SentEmail", "LeadHistoryEvent",
 ]
