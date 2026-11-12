@@ -55,7 +55,7 @@
         this.user = user;
         return user;
       } catch (e) {
-        // Health endpoint failed — token may be invalid
+        // Health endpoint failed -- token may be invalid
         writeToken("");
         writeUser(null);
         this.token = "";
@@ -122,7 +122,7 @@
     },
 
     requireAuth() {
-      // For pages that require auth — redirect to login if no token AND
+      // For pages that require auth -- redirect to login if no token AND
       // the server is in production mode. We can't know server mode without
       // calling /api/v1/health, so we attempt the call and react.
       // Returns a Promise that resolves to true (authed) or redirects.
@@ -135,13 +135,13 @@
           return true;
         }
         if (mode !== "dev" && !auth.token) {
-          // Production mode and no token → redirect to login
+          // Production mode and no token -> redirect to login
           window.location.href = "/ui/login.html";
           return false;
         }
         return true;
       }).catch(function () {
-        // Network or server error — redirect to login
+        // Network or server error -- redirect to login
         window.location.href = "/ui/login.html";
         return false;
       });
@@ -164,7 +164,7 @@
 
     const opts = { method, headers };
     if (body !== undefined) opts.body = JSON.stringify(body);
-    // CRITICAL: never use cached responses — always fetch fresh from the server.
+    // CRITICAL: never use cached responses -- always fetch fresh from the server.
     // Without this, the browser may return a cached /api/v1/health response
     // from when Google OAuth was configured, causing a blank page loop.
     opts.cache = "no-cache";
@@ -234,7 +234,7 @@
     },
 
     formatDate(iso) {
-      if (!iso) return "—";
+      if (!iso) return "--";
       try {
         const d = new Date(iso);
         if (isNaN(d.getTime())) return iso;
@@ -248,7 +248,7 @@
     },
 
     relativeTime(iso) {
-      if (!iso) return "—";
+      if (!iso) return "--";
       try {
         const d = new Date(iso);
         const now = Date.now();
@@ -296,7 +296,7 @@
     showEmpty(target, title, hint) {
       const el = typeof target === "string" ? document.querySelector(target) : target;
       if (!el) return;
-      el.innerHTML = '<div class="empty"><div class="icon">·</div>' +
+      el.innerHTML = '<div class="empty"><div class="icon">-</div>' +
         '<div class="title">' + ui.escape(title || "Nothing here") + "</div>" +
         (hint ? '<div>' + ui.escape(hint) + "</div>" : "") + "</div>";
     },

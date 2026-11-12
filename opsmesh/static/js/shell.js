@@ -1,5 +1,5 @@
 /* =========================================================================
-   OPSMESH sidebar helper — renders the consistent sidebar shell.
+   OPSMESH sidebar helper -- renders the consistent sidebar shell.
    Each page calls OPSMESH.renderShell("page-id") at load.
    ========================================================================= */
 (function (global) {
@@ -26,7 +26,7 @@
     return '' +
       '<div class="app-shell">' +
         '<aside class="sidebar">' +
-          '<div class="brand"><span class="dot">●</span> OPSMESH</div>' +
+          '<div class="brand"><span class="dot">*</span> OPSMESH</div>' +
           '<nav>' + nav + "</nav>" +
           '<div class="user">' +
             '<div class="email">' + global.OPSMESH.ui.escape(email) + "</div>" +
