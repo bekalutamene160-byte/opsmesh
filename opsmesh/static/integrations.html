@@ -192,7 +192,7 @@ await fetch(\'' + WEBHOOK_URL + '\', {
       function refreshSnippet() {
         var t = (tokenInput.value || "pk_live_...").trim();
         snippetEl.textContent =
-          '<script src="' + EMBED_JS + '" async></script>\n' +
+          '<script src="' + EMBED_JS + '" async><\/script>\n' +
           '<div id="opsmesh-form"\n' +
           '     data-token="' + t + '"\n' +
           '     data-lead-type="company"\n' +
