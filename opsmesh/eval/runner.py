@@ -149,6 +149,16 @@ class EvalRunner:
             store = InMemoryStateStore()
             specialists = make_eval_specialists(mock_config)
 
+            # Build a real ApprovalGate so Gate 2 (email send) can be exercised.
+            # Without this, the supervisor pauses at awaiting_approval and the
+            # send step never runs — so any scenario expecting sent /
+            # send_unknown / failed-during-send would fail. The runner
+            # auto-approves Gate 2 below to simulate the human decision.
+            from opsmesh.approval_gate import ApprovalGate
+            from opsmesh.approval_store import InMemoryApprovalStore
+            approval_store = InMemoryApprovalStore()
+            gate = ApprovalGate(store=store, approval_store=approval_store)
+
             # Create a run
             run = RunRecord(
                 workspace_id="ws_eval",
@@ -175,6 +185,7 @@ class EvalRunner:
 
             supervisor = Supervisor(
                 specialists=specialists, store=store,
+                approvals=gate,
                 budget_factory=budget_factory,
             )
 
@@ -185,6 +196,34 @@ class EvalRunner:
                 lead_id = run.lead_id
 
             result_run = await supervisor.run(EvalJob())
+
+            # Conditionally exercise the Gate 2 send step. By default the run
+            # pauses at awaiting_approval (the human gate — which is what most
+            # scenarios assert). Scenarios that need the send step to actually
+            # fire set "auto_approve_gate2": true; the runner simulates the
+            # human "approve" decision and re-runs the supervisor so its
+            # resume logic transitions to SENDING and the SendingSpecialist
+            # runs. Scenarios expecting "rejected" get an auto-REJECT instead.
+            auto_decision = scenario.get("auto_approve_gate2", False)
+            wants_reject = (expected_state == "rejected")
+            if (auto_decision or wants_reject) and result_run.state == State.AWAITING_APPROVAL \
+                    and result_run.pending_approval_id:
+                try:
+                    await gate.decide(
+                        approval_id=result_run.pending_approval_id,
+                        workspace_id="ws_eval",
+                        decision="reject" if wants_reject else "approve",
+                        decided_by="eval_auto",
+                    )
+                    result_run = await supervisor.run(EvalJob())
+                except Exception as decide_err:
+                    duration_ms = (time.monotonic() - start) * 1000
+                    return EvalResult(
+                        scenario_id, scenario_name, False,
+                        expected_state, result_run.state.value, duration_ms,
+                        error=f"auto-decide failed: {type(decide_err).__name__}: {str(decide_err)[:150]}",
+                    )
+
             actual_state = result_run.state.value
 
             # Check special assertions
@@ -244,16 +283,47 @@ class EvalRunner:
 
 
 async def main():
-    """Run the eval suite from the command line."""
-    import asyncio
+    """Run the eval suite from the command line.
+
+    Supports both flag and positional forms:
+        python -m opsmesh.eval.runner                          # defaults
+        python -m opsmesh.eval.runner --scenarios=all          # explicit
+        python -m opsmesh.eval.runner --output=eval.jsonl
+        python -m opsmesh.eval.runner path/to/scenarios.jsonl  # positional
+    """
+    import argparse
     import sys
 
-    scenarios_path = sys.argv[1] if len(sys.argv) > 1 else "opsmesh/eval/scenarios.jsonl"
-    output_path = sys.argv[2] if len(sys.argv) > 2 else "eval_results.jsonl"
+    parser = argparse.ArgumentParser(
+        prog="opsmesh.eval.runner",
+        description="Run the OPSMESH eval suite (32 scenarios, mock providers).",
+    )
+    parser.add_argument(
+        "scenarios_pos",
+        nargs="?",
+        default=None,
+        help="Path to scenarios JSONL (positional form). Optional.",
+    )
+    parser.add_argument(
+        "--scenarios",
+        default=None,
+        help='Path to scenarios JSONL, or "all" for the bundled suite.',
+    )
+    parser.add_argument(
+        "--output",
+        default="eval_results.jsonl",
+        help="Where to write the JSONL results (default: eval_results.jsonl).",
+    )
+    args = parser.parse_args()
+
+    # Resolve scenarios path: flag wins, then positional, then default.
+    scenarios_path = args.scenarios or args.scenarios_pos or "opsmesh/eval/scenarios.jsonl"
+    if scenarios_path == "all":
+        scenarios_path = "opsmesh/eval/scenarios.jsonl"
 
     runner = EvalRunner(scenarios_path=scenarios_path)
     summary = await runner.run_all(verbose=True)
-    runner.save_results(output_path)
+    runner.save_results(args.output)
     runner.print_summary(summary)
 
     # Exit code: 0 if all passed, 1 if any failed

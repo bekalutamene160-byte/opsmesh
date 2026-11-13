@@ -222,54 +222,23 @@ def _validate_email(email: str) -> str:
     return str(validated)
 
 
-@router.post("/events/tally", status_code=202)
-@limiter.limit(TALLY_LIMIT)
-async def tally_webhook(request: Request):
-    """Receive a Tally form submission webhook.
+async def _process_tally_submission(raw_body: bytes) -> dict:
+    """Shared post-authentication processing for both Tally routes.
 
-    Stage B Phase 1 (P0-2): HMAC signature verification is UNCONDITIONAL when
-    a secret is configured. In production_mode, a missing secret fails-closed
-    at startup (app.py) AND here (401). In dev/demo mode with no secret,
-    verification is skipped for local testing only.
-
-    Stage B Phase 1 (P0-6): the workspace is bound server-side to
-    `settings.demo_workspace_id`; the request body never supplies it.
+    Normalizes the raw Tally payload, validates the email, enforces the
+    company-required rule for company leads, and creates the lead via the
+    intake service. Returns the JSON response body (status/duplicate/etc).
     """
     if _intake_service is None:
         raise HTTPException(503, "Lead intake service not configured")
 
-    # 1. Read the RAW body
-    raw_body = await request.body()
-
-    # 2. Verify the signature on raw bytes (UNCONDITIONAL when secret is set).
-    #    Tally uses the 'tally-signature' header (verify at deploy time).
-    signature = request.headers.get("tally-signature") or request.headers.get(
-        "X-Tally-Signature", ""
-    )
-
-    settings = get_settings()
-    if _tally_secret:
-        # Secret configured → ALWAYS verify. No skip path.
-        try:
-            if not verify_hmac(raw_body, signature, secret=_tally_secret):
-                raise HTTPException(401, "Invalid Tally signature")
-        except WebhookSignatureError:
-            # verify_hmac raises this only when the secret is empty — but we
-            # already checked _tally_secret above, so this is unreachable.
-            raise HTTPException(401, "Tally signature verification failed")
-    elif settings.production_mode:
-        # Prod mode with NO secret — defense-in-depth (startup should have
-        # caught this). Reject fail-closed.
-        raise HTTPException(401, "Tally webhook secret not configured")
-    # else: dev/demo mode with no secret → skip verification (local testing).
-
-    # 3. Normalize the payload
+    # Normalize the payload
     try:
         normalized = normalize_tally_payload(raw_body)
     except Exception as e:
         raise HTTPException(400, f"Failed to parse Tally payload: {str(e)[:200]}")
 
-    # 4. Validate the contact email (P0-2: no arbitrary strings into the pipeline)
+    # Validate the contact email (P0-2: no arbitrary strings into the pipeline)
     normalized["contact_email"] = _validate_email(normalized["contact_email"])
 
     # For company leads, require company + email. For individual leads,
@@ -280,7 +249,7 @@ async def tally_webhook(request: Request):
             "Tally payload missing required field: company name (for company leads)",
         )
 
-    # 5. Create the lead — workspace is server-bound, never from the request.
+    # Create the lead — workspace is server-bound, never from the request.
     try:
         result = await _intake_service.create_lead(
             workspace_id=_workspace_id,
@@ -305,6 +274,81 @@ async def tally_webhook(request: Request):
         "lead_id": result.lead_id,
         "run_id": result.run_id,
     }
+
+
+@router.post("/events/tally", status_code=202)
+@limiter.limit(TALLY_LIMIT)
+async def tally_webhook(request: Request):
+    """Receive a Tally form submission webhook (HMAC-signed variant).
+
+    Stage B Phase 1 (P0-2): HMAC signature verification is UNCONDITIONAL when
+    a secret is configured. In production_mode, a missing secret fails-closed
+    at startup (app.py) AND here (401). In dev/demo mode with no secret,
+    verification is skipped for local testing only.
+
+    NOTE: Tally does NOT sign webhooks by default. For Tally (and other
+    unsigned form providers), use the URL-token variant:
+    POST /api/v1/events/tally/{token} — the token in the path authenticates.
+    This HMAC variant is kept for providers that DO sign payloads.
+
+    Stage B Phase 1 (P0-6): the workspace is bound server-side to
+    `settings.demo_workspace_id`; the request body never supplies it.
+    """
+    # 1. Read the RAW body
+    raw_body = await request.body()
+
+    # 2. Verify the signature on raw bytes (UNCONDITIONAL when secret is set).
+    signature = request.headers.get("tally-signature") or request.headers.get(
+        "X-Tally-Signature", ""
+    )
+
+    settings = get_settings()
+    if _tally_secret:
+        # Secret configured -> ALWAYS verify. No skip path.
+        try:
+            if not verify_hmac(raw_body, signature, secret=_tally_secret):
+                raise HTTPException(401, "Invalid Tally signature")
+        except WebhookSignatureError:
+            raise HTTPException(401, "Tally signature verification failed")
+    elif settings.production_mode:
+        raise HTTPException(401, "Tally webhook secret not configured")
+    # else: dev/demo mode with no secret -> skip verification (local testing).
+
+    return await _process_tally_submission(raw_body)
+
+
+@router.post("/events/tally/{token}", status_code=202)
+@limiter.limit(TALLY_LIMIT)
+async def tally_webhook_token(request: Request, token: str):
+    """Receive a Tally submission via URL-embedded token (unsigned variant).
+
+    Tally (and most no-code form tools: Webflow, Typeform, Zapier) do NOT
+    sign webhook payloads. Instead, the secret is embedded in the webhook
+    URL itself: the customer configures Tally to POST to
+    ``https://your-host/api/v1/events/tally/<secret>``. The token in the
+    path authenticates the request.
+
+    This is the same pattern Slack, Stripe, and Tally itself use for
+    unsigned integrations. It is secure as long as the URL (and thus the
+    token) is known only to OPSMESH and the customer's form provider.
+
+    Auth:
+      - If a Tally secret is configured: token must match it (constant-time).
+      - In production with NO secret: fail closed (401).
+      - In dev/demo with no secret: accept any token (local testing).
+    """
+    import hmac as _hmac
+
+    settings = get_settings()
+    if _tally_secret:
+        if not _hmac.compare_digest(token, _tally_secret):
+            raise HTTPException(401, "Invalid Tally webhook token")
+    elif settings.production_mode:
+        raise HTTPException(401, "Tally webhook secret not configured")
+    # else: dev/demo mode with no secret -> accept (local testing).
+
+    raw_body = await request.body()
+    return await _process_tally_submission(raw_body)
 
 
 __all__ = ["router", "configure_tally_route", "normalize_tally_payload"]

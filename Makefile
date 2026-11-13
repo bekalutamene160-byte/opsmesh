@@ -15,9 +15,15 @@ demo:
 test:
 	pytest tests/ --cov=opsmesh --cov-fail-under=80
 
-# Run eval suite (24 scenarios; mock provider)
+# Run eval suite (32 scenarios; mock providers, no API keys needed).
+# Exit code 0 = all pass, 1 = any fail. Use in CI to gate merges.
 eval:
-	LLM_PROVIDER=mock CRM_PROVIDER=mock EMAIL_PROVIDER=mock python -m opsmesh.eval.runner --scenarios=all --output=eval_results.jsonl
+	OPSMESH_LLM_PROVIDER=mock OPSMESH_CRM_PROVIDER=mock OPSMESH_EMAIL_PROVIDER=mock \
+	python -m opsmesh.eval.runner --scenarios=all --output=eval_results.jsonl
+
+# Eval + unit tests together (CI gate)
+ci: test eval
+	@echo "CI gate passed."
 
 # Lint + typecheck
 lint:

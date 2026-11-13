@@ -33,6 +33,19 @@
         '<div class="card">' +
           '<h2>Providers</h2>' +
           '<div id="providers" class="provider-grid"></div>' +
+        "</div>" +
+
+        '<div class="card">' +
+          '<h2>Connect your website</h2>' +
+          '<p class="text-dim" style="margin:0 0 16px;font-size:13px;">Three ways to feed leads into OPSMESH automatically. Pick the one that matches your site.</p>' +
+          '<div id="connect-tabs" class="connect-tabs">' +
+            '<button class="connect-tab active" data-tab="webhook">Webhook (server-side)</button>' +
+            '<button class="connect-tab" data-tab="embed">Embed widget (no backend)</button>' +
+            '<button class="connect-tab" data-tab="tally">Tally form</button>' +
+          '</div>' +
+          '<div id="connect-webhook" class="connect-panel"></div>' +
+          '<div id="connect-embed" class="connect-panel" style="display:none;"></div>' +
+          '<div id="connect-tally" class="connect-panel" style="display:none;"></div>' +
         "</div>"
       );
       OPSMESH.attachShellHandlers();
@@ -114,6 +127,175 @@
       function row(k, v) {
         return "<tr><td>" + ui.escape(k) + "</td><td>" + v + "</td></tr>";
       }
+
+      // --- Connect-your-website panels ---
+      const ORIGIN = window.location.origin;
+      const WEBHOOK_URL = ORIGIN + "/api/v1/events/new_lead";
+      const PUBLIC_LEAD_URL = ORIGIN + "/api/v1/public/lead";
+      const PUBLIC_STATUS_URL = ORIGIN + "/api/v1/public/status";
+      const TALLY_URL = ORIGIN + "/api/v1/events/tally";
+      const EMBED_JS = ORIGIN + "/ui/embed.js";
+
+      // Webhook panel (server-side HMAC)
+      document.getElementById("connect-webhook").innerHTML =
+        '<p class="connect-lede">Best for sites with a backend (Node, Python, PHP, etc.). Your server signs each request with HMAC-SHA256 so leads can\'t be forged.</p>' +
+        '<div class="connect-field"><label>Webhook URL</label><div class="copy-row"><code>' + WEBHOOK_URL + '</code><button class="btn small" data-copy="' + WEBHOOK_URL + '">Copy</button></div></div>' +
+        '<div class="connect-field"><label>Sample payload (JSON)</label><pre class="code-block">{"company":"Acme Corp","contact_email":"founder@acme.com","contact_name":"Jane Doe","industry":"Software","employees":50,"website":"https://acme.com","submission_id":"uuid-1234"}</pre></div>' +
+        '<div class="connect-field"><label>cURL (with HMAC signature)</label><pre class="code-block">BODY=\'{"company":"Acme Corp","contact_email":"founder@acme.com","submission_id":"uuid-1"}\'
+SECRET=\'your-opsmesh-webhook-secret\'
+SIG=$(printf \'%s\' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk \'{print $NF}\')
+curl -X POST ' + WEBHOOK_URL + ' \\
+  -H "Content-Type: application/json" \\
+  -H "X-Signature: $SIG" \\
+  --data-raw "$BODY"</pre></div>' +
+        '<div class="connect-field"><label>Node.js snippet (signs server-side)</label><pre class="code-block">const crypto = require(\'crypto\');
+const body = JSON.stringify({company, contact_email, submission_id});
+const sig = crypto.createHmac(\'sha256\', process.env.OPSMESH_WEBHOOK_SECRET)
+                  .update(body).digest(\'hex\');
+await fetch(\'' + WEBHOOK_URL + '\', {
+  method: \'POST\',
+  headers: {\'Content-Type\': \'application/json\', \'X-Signature\': sig},
+  body,
+});</pre></div>' +
+        '<div class="connect-note">Set <code>OPSMESH_WEBHOOK_SECRET</code> on the OPSMESH server and use the same value to sign. Duplicate <code>submission_id</code>s are ignored automatically.</div>';
+
+      // Embed widget panel (no backend - public token)
+      // v2: endpoint is auto-derived from the script src, so the customer
+      // only needs the script tag + a div with their token. The status
+      // indicator + test button prove it works before they ship it.
+      document.getElementById("connect-embed").innerHTML =
+        '<p class="connect-lede">Best for static sites (no backend). Drop one script tag + a div; OPSMESH handles the rest. The endpoint is auto-derived from where the script loads - no URL to paste.</p>' +
+        '<div class="connect-field"><label>Widget status</label><div id="embed-status" class="connect-status">Checking...</div></div>' +
+        '<div class="connect-field"><label>Publishable token</label>' +
+          '<div class="copy-row">' +
+            '<input id="embed-token" type="text" placeholder="pk_live_..." style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-family:monospace;font-size:13px;">' +
+            '<button class="btn small" id="embed-gen-token">Generate</button>' +
+          '</div>' +
+          '<div class="connect-note">A publishable token (like Stripe\'s). Safe to expose in browser JS - it can only create leads, never read or send. Set it on the server as <code>OPSMESH_PUBLIC_TOKEN</code> in <code>.env</code>, then restart.</div>' +
+        '</div>' +
+        '<div class="connect-field"><label>Snippet (paste into your site\'s HTML)</label><pre class="code-block" id="embed-snippet">&lt;script src="' + EMBED_JS + '" async&gt;&lt;/script&gt;
+&lt;div id="opsmesh-form"
+     data-token="pk_live_..."
+     data-lead-type="company"
+     data-heading="Get in touch"&gt;&lt;/div&gt;</pre>' +
+          '<div class="connect-note">That\'s it. The form renders styled, validates the email, traps bots with a honeypot, and POSTs to <code>' + PUBLIC_LEAD_URL + '</code>. Optional: <code>data-redirect</code>, <code>data-color</code>, <code>data-lead-type="individual"</code>.</div>' +
+        '</div>' +
+        '<div class="connect-field"><label>Test it now</label>' +
+          '<div class="connect-note" style="margin-bottom:10px;">Sends a real test lead through the public endpoint using the token above. You should see it appear on the Leads page within a second.</div>' +
+          '<button class="btn" id="embed-test-btn">Send test lead</button>' +
+          '<div id="embed-test-result" style="margin-top:10px;"></div>' +
+        '</div>';
+
+      // Live token -> snippet binding
+      var tokenInput = document.getElementById("embed-token");
+      var snippetEl = document.getElementById("embed-snippet");
+      function refreshSnippet() {
+        var t = (tokenInput.value || "pk_live_...").trim();
+        snippetEl.textContent =
+          '<script src="' + EMBED_JS + '" async></script>\n' +
+          '<div id="opsmesh-form"\n' +
+          '     data-token="' + t + '"\n' +
+          '     data-lead-type="company"\n' +
+          '     data-heading="Get in touch"></div>';
+      }
+      tokenInput.addEventListener("input", refreshSnippet);
+
+      // Generate a random publishable token
+      document.getElementById("embed-gen-token").addEventListener("click", function () {
+        var bytes = new Uint8Array(24);
+        (window.crypto || {}).getRandomValues && window.crypto.getRandomValues(bytes);
+        var hex = Array.prototype.map.call(bytes, function (b) {
+          return ("0" + b.toString(16)).slice(-2);
+        }).join("");
+        tokenInput.value = "pk_live_" + hex;
+        refreshSnippet();
+      });
+
+      // Check whether the public endpoint is enabled
+      fetch(PUBLIC_STATUS_URL).then(function (r) { return r.json(); }).then(function (s) {
+        var box = document.getElementById("embed-status");
+        if (s.enabled) {
+          box.innerHTML = '<span class="badge success">enabled</span> - the public endpoint is live and ready.';
+        } else {
+          box.innerHTML = '<span class="badge warning">not configured</span> - generate a token above, add <code>OPSMESH_PUBLIC_TOKEN=&lt;token&gt;</code> to <code>.env</code>, restart uvicorn.';
+        }
+      }).catch(function () {
+        document.getElementById("embed-status").innerHTML = '<span class="badge neutral">unknown</span> - could not reach the status endpoint.';
+      });
+
+      // Send a test lead through the public endpoint
+      document.getElementById("embed-test-btn").addEventListener("click", function () {
+        var btn = document.getElementById("embed-test-btn");
+        var out = document.getElementById("embed-test-result");
+        var token = (tokenInput.value || "").trim();
+        if (!token) {
+          out.innerHTML = '<span style="color:var(--danger);">Enter or generate a publishable token first.</span>';
+          return;
+        }
+        btn.disabled = true; btn.textContent = "Sending...";
+        out.innerHTML = '<span class="text-dim">Submitting test lead...</span>';
+        var sid = "test_" + Date.now();
+        fetch(PUBLIC_LEAD_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+          body: JSON.stringify({
+            company: "Test Company (integration check)",
+            contact_email: "test-lead+embed@opsmesh.dev",
+            contact_name: "Integration Test",
+            industry: "Software",
+            lead_type: "company",
+            submission_id: sid
+          })
+        }).then(function (r) { return r.json().then(function (b) { return { s: r.status, b: b }; }); }).then(function (res) {
+          btn.disabled = false; btn.textContent = "Send test lead";
+          if (res.s >= 200 && res.s < 300 && res.b.status === "accepted") {
+            out.innerHTML = '<span class="badge success">success</span> Lead <code>' + (res.b.lead_id || "?").slice(0, 8) + '</code> created, run <code>' + (res.b.run_id || "?").slice(0, 8) + '</code> queued. Check the Leads page.';
+          } else if (res.s === 401) {
+            out.innerHTML = '<span class="badge danger">401</span> ' + ui.escape(res.b.detail || "Token not accepted. Set OPSMESH_PUBLIC_TOKEN on the server to match this token, then restart.");
+          } else if (res.b.status === "duplicate") {
+            out.innerHTML = '<span class="badge warning">duplicate</span> That submission_id was already used. Click again (a new ID is generated each time).';
+          } else {
+            out.innerHTML = '<span class="badge danger">' + res.s + '</span> ' + ui.escape(res.b.detail || JSON.stringify(res.b));
+          }
+        }).catch(function (e) {
+          btn.disabled = false; btn.textContent = "Send test lead";
+          out.innerHTML = '<span class="badge danger">network error</span> ' + ui.escape(String(e));
+        });
+      });
+
+      // Tally panel
+      document.getElementById("connect-tally").innerHTML =
+        '<p class="connect-lede">Already use Tally? Point Tally\'s webhook at OPSMESH and every submission becomes a researched lead.</p>' +
+        '<div class="connect-field"><label>Tally webhook URL (recommended - URL token)</label><div class="copy-row"><code>' + TALLY_URL + '/<strong>&lt;your-secret&gt;</strong></code><button class="btn small" data-copy="' + TALLY_URL + '/YOUR-TALLY-SECRET">Copy</button></div>' +
+          '<div class="connect-note">Tally does NOT sign webhooks, so put your secret in the URL path. Set <code>OPSMESH_TALLY_WEBHOOK_SECRET</code> on the OPSMESH server and use the same value in the URL.</div></div>' +
+        '<div class="connect-field"><label>Setup</label><ol class="connect-list"><li>Create a form on <a href="https://tally.so" target="_blank">tally.so</a> with fields for company, email, name, industry.</li><li>Set <code>OPSMESH_TALLY_WEBHOOK_SECRET</code> in OPSMESH\'s <code>.env</code> (e.g. <code>tok_abc123</code>) and restart.</li><li>In Tally: Integrations &rarr; Webhooks &rarr; paste <code>' + TALLY_URL + '/tok_abc123</code>.</li><li>Every submission auto-creates a lead + starts the research run. Map fields by label: "Company Name", "Email", "Industry".</li></ol></div>' +
+        '<div class="connect-field"><label>Sample Tally payload</label><pre class="code-block">{"submissionId":"sub_001","fields":[
+  {"label":"Company Name","value":"Acme Corp"},
+  {"label":"Email","value":"founder@acme.com"},
+  {"label":"Industry","value":"Software"}
+]}</pre></div>';
+
+      // Tab switching
+      document.querySelectorAll(".connect-tab").forEach(function (tab) {
+        tab.addEventListener("click", function () {
+          document.querySelectorAll(".connect-tab").forEach(function (t) { t.classList.remove("active"); });
+          tab.classList.add("active");
+          ["webhook", "embed", "tally"].forEach(function (name) {
+            document.getElementById("connect-" + name).style.display = (name === tab.dataset.tab) ? "" : "none";
+          });
+        });
+      });
+
+      // Copy-to-clipboard for [data-copy] buttons
+      document.querySelectorAll("[data-copy]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          navigator.clipboard.writeText(btn.getAttribute("data-copy")).then(function () {
+            var orig = btn.textContent;
+            btn.textContent = "Copied!";
+            setTimeout(function () { btn.textContent = orig; }, 1200);
+          });
+        });
+      });
     })();
   </script>
 </body>

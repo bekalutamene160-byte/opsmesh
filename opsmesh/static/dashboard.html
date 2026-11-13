@@ -29,6 +29,8 @@
           '<div class="meta" id="generated-at">--</div>' +
         "</div>" +
 
+        '<div id="onboarding-hero" class="hero" style="display:none;"></div>' +
+
         '<div id="action-banner"></div>' +
 
         '<div id="metrics" class="stat-grid"></div>' +
@@ -57,6 +59,34 @@
 
       const ui = OPSMESH.ui;
       const api = OPSMESH.api;
+
+      // --- Onboarding hero (first-run, dismissible) ---
+      // A concise SaaS-style intro: what OPSMESH is + the 3-step flow.
+      // Hidden once dismissed (localStorage) or once the user has runs.
+      (function renderHero() {
+        if (localStorage.getItem("opsmesh_intro_dismissed") === "1") return;
+        document.getElementById("onboarding-hero").style.display = "";
+        document.getElementById("onboarding-hero").innerHTML =
+          '<div class="hero-inner">' +
+            '<div class="hero-eyebrow">Evidence-aware B2B sales agent</div>' +
+            '<h2 class="hero-title">Research, draft, and send outreach — with a human approving every email.</h2>' +
+            '<p class="hero-sub">OPSMESH researches each lead, qualifies it, drafts a personalized email, then pauses for your approval before anything sends. Every action is logged, every send is gated, every claim is checked.</p>' +
+            '<div class="hero-steps">' +
+              '<div class="hero-step"><span class="hero-step-num">1</span><div><strong>Create a lead</strong><br><span class="hero-step-sub">Manual, webhook, or embed widget</span></div></div>' +
+              '<div class="hero-step"><span class="hero-step-num">2</span><div><strong>Review the draft</strong><br><span class="hero-step-sub">Approve, reject, or request changes at Gate 2</span></div></div>' +
+              '<div class="hero-step"><span class="hero-step-num">3</span><div><strong>Email sends + CRM sync</strong><br><span class="hero-step-sub">Resend + HubSpot, fully audited</span></div></div>' +
+            '</div>' +
+            '<div class="hero-actions">' +
+              '<a class="btn primary" href="/ui/leads.html">Create your first lead &rarr;</a>' +
+              '<a class="btn ghost" href="/ui/integrations.html">Connect your website</a>' +
+              '<button class="btn ghost" id="hero-dismiss">Dismiss</button>' +
+            '</div>' +
+          '</div>';
+        document.getElementById("hero-dismiss").addEventListener("click", function () {
+          localStorage.setItem("opsmesh_intro_dismissed", "1");
+          document.getElementById("onboarding-hero").style.display = "none";
+        });
+      })();
 
       ui.showLoading("#recent-runs");
       ui.showLoading("#pending-approvals");

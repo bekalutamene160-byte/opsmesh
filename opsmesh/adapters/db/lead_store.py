@@ -163,14 +163,14 @@ class DatabaseLeadStore:
                     """UPDATE leads SET
                         workspace_id = ?, crm_lead_id = ?, company = ?,
                         contact_email = ?, contact_name = ?, industry = ?,
-                        employees = ?, website = ?, source = ?,
+                        employees = ?, website = ?, lead_type = ?, source = ?,
                         source_submission_id = ?, disposition = ?,
                         disposition_reason = ?, updated_at = ?
                        WHERE id = ?""",
                     (
                         lead.workspace_id, lead.crm_lead_id, lead.company,
                         lead.contact_email, lead.contact_name, lead.industry,
-                        lead.employees, lead.website,
+                        lead.employees, lead.website, lead.lead_type,
                         lead.source.value if hasattr(lead.source, "value") else str(lead.source),
                         lead.source_submission_id,
                         lead.disposition.value if hasattr(lead.disposition, "value") else str(lead.disposition),
@@ -183,14 +183,14 @@ class DatabaseLeadStore:
                 await conn.execute(
                     """INSERT INTO leads (
                         id, workspace_id, crm_lead_id, company, contact_email,
-                        contact_name, industry, employees, website, source,
+                        contact_name, industry, employees, website, lead_type, source,
                         source_submission_id, disposition, disposition_reason,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         lead.id, lead.workspace_id, lead.crm_lead_id, lead.company,
                         lead.contact_email, lead.contact_name, lead.industry,
-                        lead.employees, lead.website,
+                        lead.employees, lead.website, lead.lead_type,
                         lead.source.value if hasattr(lead.source, "value") else str(lead.source),
                         lead.source_submission_id,
                         lead.disposition.value if hasattr(lead.disposition, "value") else str(lead.disposition),
@@ -205,7 +205,7 @@ class DatabaseLeadStore:
         async with get_connection() as conn:
             cursor = await conn.execute(
                 "SELECT id, workspace_id, crm_lead_id, company, contact_email, "
-                "contact_name, industry, employees, website, source, "
+                "contact_name, industry, employees, website, lead_type, source, "
                 "source_submission_id, disposition, disposition_reason, "
                 "created_at, updated_at "
                 "FROM leads WHERE id = ? AND workspace_id = ?",
@@ -238,7 +238,7 @@ class DatabaseLeadStore:
             # Get the page
             cursor = await conn.execute(
                 "SELECT id, workspace_id, crm_lead_id, company, contact_email, "
-                "contact_name, industry, employees, website, source, "
+                "contact_name, industry, employees, website, lead_type, source, "
                 "source_submission_id, disposition, disposition_reason, "
                 "created_at, updated_at "
                 "FROM leads WHERE workspace_id = ? "
@@ -279,7 +279,7 @@ class DatabaseLeadStore:
         async with get_connection() as conn:
             cursor = await conn.execute(
                 "SELECT id, workspace_id, crm_lead_id, company, contact_email, "
-                "contact_name, industry, employees, website, source, "
+                "contact_name, industry, employees, website, lead_type, source, "
                 "source_submission_id, disposition, disposition_reason, "
                 "created_at, updated_at "
                 "FROM leads WHERE workspace_id = ? AND source_submission_id = ?",
@@ -299,7 +299,7 @@ class DatabaseLeadStore:
 
 
 def _row_to_lead(row) -> Lead:
-    """Convert a DB row (15 columns) to a Lead Pydantic model.
+    """Convert a DB row (16 columns) to a Lead Pydantic model.
 
     Handles datetime parsing from ISO strings.
     """
@@ -323,12 +323,13 @@ def _row_to_lead(row) -> Lead:
         industry=row[6],
         employees=row[7],
         website=row[8],
-        source=LeadSource(row[9]),
-        source_submission_id=row[10],
-        disposition=LeadDisposition(row[11]),
-        disposition_reason=row[12],
-        created_at=_parse_dt(row[13]),
-        updated_at=_parse_dt(row[14]),
+        lead_type=row[9] or "company",
+        source=LeadSource(row[10]),
+        source_submission_id=row[11],
+        disposition=LeadDisposition(row[12]),
+        disposition_reason=row[13],
+        created_at=_parse_dt(row[14]),
+        updated_at=_parse_dt(row[15]),
     )
 
 

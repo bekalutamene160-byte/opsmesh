@@ -155,6 +155,29 @@ class ResearchSpecialist:
 
     async def _research_company(self, run, company, industry, contact_email):
         """Research a company lead (original behavior)."""
+        # --- Input guardrails: PII redaction + prompt-injection detection ---
+        # Run BEFORE any field reaches the LLM. If injection is detected in the
+        # company name / notes, fail closed: route to Gate 1 (evidence review)
+        # instead of letting the payload reach the model.
+        from opsmesh.guardrails.wiring import apply_input_guardrails
+        lead_payload = {
+            "company": company, "industry": industry,
+            "contact_email": contact_email, "lead_type": "company",
+        }
+        safe_payload, guardrail_error = apply_input_guardrails(lead_payload)
+        if guardrail_error:
+            logger.warning(f"Input guardrail blocked research for run {run.run_id}: {guardrail_error}")
+            return ResearchResult(
+                evidence=[],
+                missing_info=[guardrail_error],
+                summary=f"Research blocked by input guardrail: {guardrail_error}",
+                sufficient_for_qualification=False,
+            )
+        # Use the PII-redacted fields in the prompt (LLM never sees raw emails).
+        company = safe_payload.get("company", company)
+        industry = safe_payload.get("industry", industry)
+        contact_email = safe_payload.get("contact_email", contact_email)
+
         query = f"{company} {industry} company overview"
         web_hits: list[WebSearchHit] = []
         if self.research is not None:
@@ -207,10 +230,17 @@ class ResearchSpecialist:
                 sufficient = True
                 missing = []
         except Exception as e:
+            # HONEST failure (was: silent fake "Research completed for X").
+            # Mark insufficient so the run pauses at Gate 1 (evidence review)
+            # for a human decision, instead of proceeding on fabricated data.
             logger.error(f"LLM call failed in ResearchSpecialist: {e}")
-            summary = f"Research completed for {company}."
-            sufficient = True
-            missing = []
+            return ResearchResult(
+                evidence=[],
+                missing_info=[f"Research LLM unavailable: {type(e).__name__} — manual review required"],
+                summary=f"Research could not be completed automatically for {company} "
+                        f"(LLM error: {type(e).__name__}). Please review manually.",
+                sufficient_for_qualification=False,
+            )
 
         summary = summary or f"Research for {company}."
 
@@ -241,6 +271,28 @@ class ResearchSpecialist:
         The goal is to understand the person's situation so the draft email
         can be personalized.
         """
+        # --- Input guardrails: PII redaction + prompt-injection detection ---
+        from opsmesh.guardrails.wiring import apply_input_guardrails
+        lead_payload = {
+            "contact_name": contact_name, "contact_email": contact_email,
+            "website": website, "notes": notes, "industry": industry,
+            "lead_type": "individual",
+        }
+        safe_payload, guardrail_error = apply_input_guardrails(lead_payload)
+        if guardrail_error:
+            logger.warning(f"Input guardrail blocked individual research for run {run.run_id}: {guardrail_error}")
+            return ResearchResult(
+                evidence=[],
+                missing_info=[guardrail_error],
+                summary=f"Research blocked by input guardrail: {guardrail_error}",
+                sufficient_for_qualification=False,
+            )
+        contact_name = safe_payload.get("contact_name", contact_name)
+        contact_email = safe_payload.get("contact_email", contact_email)
+        website = safe_payload.get("website", website)
+        notes = safe_payload.get("notes", notes)
+        industry = safe_payload.get("industry", industry)
+
         web_hits: list[WebSearchHit] = []
         if website and self.research is not None:
             # Research the person's website
@@ -299,10 +351,15 @@ class ResearchSpecialist:
                 sufficient = True
                 missing = []
         except Exception as e:
+            # HONEST failure (was: silent fake "Research completed for X").
             logger.error(f"LLM call failed in ResearchSpecialist (individual): {e}")
-            summary = f"Research completed for {contact_name or contact_email}."
-            sufficient = True
-            missing = []
+            return ResearchResult(
+                evidence=[],
+                missing_info=[f"Research LLM unavailable: {type(e).__name__} — manual review required"],
+                summary=f"Research could not be completed automatically for {contact_name or contact_email} "
+                        f"(LLM error: {type(e).__name__}). Please review manually.",
+                sufficient_for_qualification=False,
+            )
 
         summary = summary or f"Research for {contact_name or contact_email}."
 
@@ -593,6 +650,40 @@ class DraftSpecialist:
             recipient=recipient,
             claims=[],
         )
+
+        # --- Output guardrails: length cap + recipient validation ---
+        # Enforced on EVERY draft before it becomes an approval payload.
+        # LengthCap: truncate to 250 words (hard cap from the Engineering
+        #   Contract). The critic may still reject for being too long, but
+        #   this guarantees a hard ceiling.
+        # RecipientValidator: the draft recipient MUST match the lead's
+        #   contact email — prevents a compromised LLM from swapping the
+        #   recipient post-approval.
+        from opsmesh.guardrails.wiring import apply_output_guardrails
+        draft_result, guardrail_error = apply_output_guardrails(
+            draft_result, expected_recipient=contact_email
+        )
+        if guardrail_error:
+            logger.warning(
+                f"Output guardrail flagged draft for run {run.run_id}: {guardrail_error}. "
+                f"Auto-correcting recipient + truncating body to cap."
+            )
+            # Force the recipient to the lead's email (single source of truth).
+            draft_result = DraftResult(
+                subject=draft_result.subject,
+                body=draft_result.body,
+                recipient=contact_email,
+                claims=draft_result.claims,
+            )
+            # Hard length cap: truncate to 250 words.
+            words = draft_result.body.split()
+            if len(words) > 250:
+                draft_result = DraftResult(
+                    subject=draft_result.subject,
+                    body=" ".join(words[:250]),
+                    recipient=draft_result.recipient,
+                    claims=draft_result.claims,
+                )
 
         # Log a history event (the agent's memory)
         if self.history_store is not None:

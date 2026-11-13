@@ -94,6 +94,32 @@ class WebhookSuppressed(BaseModel):
     run_id: Optional[str] = None  # omitted
 
 
+class PublicLeadPayload(BaseModel):
+    """Validated payload for the public lead-submission endpoint.
+
+    This is the server-side validation layer (P0-2): the embed widget
+    validates client-side too, but a direct API caller can bypass the JS,
+    so we validate here. Email format, lead_type enum, and field length
+    caps are enforced. A honeypot field (website_hp) is accepted but, if
+    non-empty, causes the lead to be silently dropped (bot trap).
+    """
+
+    contact_email: EmailStr
+    contact_name: Optional[str] = Field(default=None, max_length=200)
+    company: Optional[str] = Field(default="", max_length=200)
+    industry: Optional[str] = Field(default=None, max_length=120)
+    website: Optional[str] = Field(default=None, max_length=300)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    employees: Optional[int] = Field(default=None, ge=1, le=1_000_000)
+    lead_type: str = Field(default="company", pattern="^(company|individual)$")
+    submission_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    # Honeypot: bots fill this; humans never see it (hidden off-screen in
+    # the widget). If present and non-empty, the request is silently
+    # accepted (202) but NO lead is created. The field name is innocuous
+    # so bots that auto-fill every field trip it.
+    website_hp: Optional[str] = Field(default=None, max_length=2000)
+
+
 # ---------------------------------------------------------------------------
 # Route handler
 # ---------------------------------------------------------------------------
@@ -185,5 +211,120 @@ def configure_webhook_route(
             run_id=result.run_id,
         )
 
+    # ------------------------------------------------------------------
+    # PUBLIC lead endpoint — for the embed widget (no backend, no HMAC).
+    # Auth: a publishable token (OPSMESH_PUBLIC_TOKEN) sent as
+    # `Authorization: Bearer pk_live_...`. The token can ONLY create leads
+    # — never read, send, or approve. CORS is open for this path so static
+    # sites can POST directly from the browser.
+    #
+    # Stage B Hotfix v4 (integration hardening):
+    #   - Pydantic-validated payload (email format, lead_type enum, caps).
+    #   - Honeypot field (website_hp) silently drops bot submissions.
+    #   - GET /public/status reports whether the endpoint is enabled
+    #     WITHOUT leaking the token value.
+    # ------------------------------------------------------------------
+    PUBLIC_LEAD_LIMIT = "10/minute"
 
-__all__ = ["router", "configure_webhook_route", "WebhookPayload", "WebhookAccepted"]
+    def _public_token() -> str:
+        from opsmesh.config import get_settings
+        return getattr(get_settings(), "public_token", "") or ""
+
+    @router.get("/public/status", status_code=200)
+    async def public_lead_status():
+        """Report whether the public lead endpoint is enabled.
+
+        Returns {enabled: bool}. Does NOT reveal the token value. Used by
+        the Integrations page to show the embed-widget status and by
+        deploy-time smoke tests.
+        """
+        return {"enabled": bool(_public_token())}
+
+    @router.post("/public/lead", status_code=202)
+    @limiter.limit(PUBLIC_LEAD_LIMIT)
+    async def public_lead(request: Request):
+        """Public lead-submission endpoint for the embed widget.
+
+        Headers: Authorization: Bearer <OPSMESH_PUBLIC_TOKEN>
+        Body: PublicLeadPayload (validated: email, lead_type, caps)
+
+        Returns 202 + {lead_id, run_id} on success.
+        Returns 401 if the public token is not configured or doesn't match.
+        Returns 422 on validation error (bad email, bad lead_type, etc.).
+        Returns 202 with status=duplicate on duplicate submission_id.
+
+        Honeypot: if `website_hp` is non-empty, returns 202 accepted but
+        creates NO lead (bot trap - the bot can't tell it was dropped).
+
+        NOTE: the body is read raw and parsed manually (matching
+        new_lead_webhook in this file) rather than declared as a Pydantic
+        body parameter. With `from __future__ import annotations` active,
+        FastAPI does not resolve a model annotation on a nested function as
+        a body param (it falls back to query), so we validate explicitly
+        here via PublicLeadPayload.model_validate().
+        """
+        public_token = _public_token()
+        if not public_token:
+            raise HTTPException(
+                status_code=401,
+                detail="Public lead endpoint is not enabled. Set OPSMESH_PUBLIC_TOKEN on the server.",
+            )
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing Bearer token.")
+        provided = auth[7:].strip()
+        # Constant-time comparison to resist timing probes.
+        import hmac as _hmac
+        if not _hmac.compare_digest(provided, public_token):
+            raise HTTPException(status_code=401, detail="Invalid publishable token.")
+
+        raw_body = await request.body()
+        import json as _json
+        try:
+            data = _json.loads(raw_body) if raw_body else {}
+        except _json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON body.")
+        try:
+            payload = PublicLeadPayload.model_validate(data)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Validation error: {str(e)[:300]}")
+
+        # Honeypot: silently swallow bot submissions. Return the same 202
+        # shape a real success would have (minus the ids) so the bot can't
+        # distinguish a dropped submission from a real one.
+        if payload.website_hp:
+            return {"status": "accepted"}
+
+        # For company leads, require a company name (the widget enforces
+        # this client-side too, but a direct API caller must be held to it).
+        if payload.lead_type == "company" and not (payload.company or "").strip():
+            raise HTTPException(
+                status_code=422,
+                detail="company is required for lead_type='company'.",
+            )
+
+        submission_id = payload.submission_id or f"pub_{id(payload)}"
+
+        try:
+            result = await _intake_service.create_lead(
+                workspace_id=_workspace_id,
+                company=payload.company or "",
+                contact_email=str(payload.contact_email),
+                contact_name=payload.contact_name,
+                industry=payload.industry,
+                employees=payload.employees,
+                website=payload.website,
+                notes=payload.notes,
+                lead_type=payload.lead_type,
+                source=LeadSource.WEBHOOK,
+                submission_id=submission_id,
+            )
+        except DuplicateSubmission as e:
+            return {"status": "duplicate", "submission_id": e.submission_id}
+        except SuppressedEmail:
+            return {"status": "suppressed"}
+
+        return {"status": "accepted", "lead_id": result.lead_id, "run_id": result.run_id}
+
+
+__all__ = ["router", "configure_webhook_route", "WebhookPayload", "WebhookAccepted", "PublicLeadPayload"]

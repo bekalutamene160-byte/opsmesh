@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # --- Webhook ---
     webhook_secret: str = ""
     tally_webhook_secret: str = ""  # separate from the generic webhook secret
+    # Publishable token for the embed widget (static sites, no backend).
+    # Safe to expose in browser JS — the public endpoint can ONLY create
+    # leads, never read/send/approve. Empty = public endpoint disabled.
+    public_token: str = ""
 
     # --- Session cookie signing ---
     session_secret: str = ""

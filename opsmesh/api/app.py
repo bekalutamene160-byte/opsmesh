@@ -402,6 +402,37 @@ def create_app(
     # handler runs inside the CORS layer.
     app.add_middleware(SlowAPIMiddleware)
 
+    # --- Permissive CORS for the public lead endpoint ---
+    # The embed widget (static sites, no backend) POSTs to
+    # /api/v1/public/lead from arbitrary origins. The global CORS config
+    # above uses an explicit origin list (no wildcard in demo mode), so we
+    # add a dedicated middleware for the /api/v1/public/ path that allows
+    # any origin. Added LAST → runs FIRST (outermost), short-circuits
+    # preflight OPTIONS for public paths and injects the CORS headers.
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class PublicCorsMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            path = request.url.path
+            if path.startswith("/api/v1/public/"):
+                if request.method == "OPTIONS":
+                    from starlette.responses import Response
+                    return Response(
+                        status_code=204,
+                        headers={
+                            "Access-Control-Allow-Origin": "*",
+                            "Access-Control-Allow-Methods": "POST, OPTIONS",
+                            "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                            "Access-Control-Max-Age": "86400",
+                        },
+                    )
+                response = await call_next(request)
+                response.headers["Access-Control-Allow-Origin"] = "*"
+                return response
+            return await call_next(request)
+
+    app.add_middleware(PublicCorsMiddleware)
+
     # --- Global exception handler (Phase 4) ---
     # Any uncaught exception returns a structured {"error": {"code", "message"}}
     # response. This prevents raw 500s from leaking to the frontend and gives
