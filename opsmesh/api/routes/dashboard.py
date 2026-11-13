@@ -112,6 +112,14 @@ async def get_dashboard():
                 "state": r.state.value if hasattr(r.state, 'value') else str(r.state),
                 "pending_approval_id": r.pending_approval_id,
                 "updated_at": r.updated_at.isoformat(),
+                # Stage B hotfix: surface what the approval is FOR so the
+                # operator can see it inline in the dashboard + approvals
+                # list without clicking into each one.
+                "gate": "Gate 2 — Email Send"
+                    if r.state == State.AWAITING_APPROVAL
+                    else "Gate 1 — Evidence Review",
+                "draft_subject": r.draft.subject if r.draft else None,
+                "draft_recipient": r.draft.recipient if r.draft else None,
             }
             for r in pending
         ],

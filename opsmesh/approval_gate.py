@@ -401,7 +401,38 @@ class ApprovalGate:
 
         # 6. Transition the run
         run.state = transition(run.state, target_state)
-        run.pending_approval_id = None  # clear the pending approval
+
+        # Stage B hotfix: handle consumption per-gate-kind.
+        #
+        # Gate 1 (evidence_review): there is NO gateway/send step that will
+        #   consume this approval later. resume() is the only consumption
+        #   site, so we atomically verify-and-consume it here AND clear
+        #   pending_approval_id (the run moves to DRAFTING and does not need
+        #   the Gate 1 approval ID anymore).
+        #
+        # Gate 2 (email_send): the ToolGateway's verify_and_consume() is the
+        #   real single-use enforcement, called at the actual send site by
+        #   the SendingSpecialist. If we consumed it here, the gateway's CAS
+        #   (approved -> consumed) would fail later. And if we cleared
+        #   pending_approval_id here, the SendingSpecialist would have no
+        #   approval_id to pass to the gateway -> "No Gate 2 approval
+        #   (pending_approval_id is empty) — send blocked". So for Gate 2 we
+        #   keep BOTH the approval status (APPROVED) and pending_approval_id
+        #   intact, and let the gateway consume at send time.
+        if record.kind == ApprovalKind.EVIDENCE_REVIEW:
+            try:
+                await self.approval_store.verify_and_consume(
+                    approval_id=approval_id,
+                    workspace_id=workspace_id,
+                    run_id=record.run_id,
+                    action=record.action,
+                    payload_hash=record.payload_hash,
+                )
+            except Exception:
+                # Best-effort: the approval may already be consumed (e.g.,
+                # duplicate resume). Don't fail the run transition.
+                pass
+            run.pending_approval_id = None
 
         # For request_changes (Gate 2), set critic_feedback
         if record.decision == "request_changes":
@@ -413,10 +444,7 @@ class ApprovalGate:
             # (the Draft specialist will include it in the draft prompt)
             pass
 
-        # 7. Mark the approval as CONSUMED (single-use)
-        record.status = ApprovalStatus.CONSUMED
-
-        # 8. Save the checkpoint
+        # 7. Save the checkpoint.
         await self.store.save_checkpoint(run)
 
         return run

@@ -412,6 +412,14 @@ class Supervisor:
             if hasattr(result, "verdict"):
                 if result.verdict == "APPROVED":
                     run.critic_feedback = None
+                    # Clear any prior pending_approval_id so the post-step
+                    # check creates a FRESH Gate 2 approval. Handles the
+                    # Gate1->Draft->Critic loop and request_changes->Draft->
+                    # Critic loop, where the run carries an old approval ID
+                    # from a previous gate. Without this, the condition
+                    # `run.pending_approval_id is None` in _execute_step
+                    # would be False and no new Gate 2 approval is created.
+                    run.pending_approval_id = None
                     # FIX 2: Wire Gate 2 into the supervisor.
                     # Transition to AWAITING_APPROVAL and create an approval record.
                     self._transition_to_sync(run, State.AWAITING_APPROVAL)

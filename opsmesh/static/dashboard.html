@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OPSMESH -- Overview</title>
-  <link rel="stylesheet" href="/ui/css/app.css">
+  <link rel="stylesheet" href="/ui/css/app.css?v=8">
 </head>
 <body>
   <div id="root">
@@ -14,8 +14,8 @@
     </div>
   </div>
 
-  <script src="/ui/js/app.js?v=7"></script>
-  <script src="/ui/js/shell.js?v=7"></script>
+  <script src="/ui/js/app.js?v=8"></script>
+  <script src="/ui/js/shell.js?v=8"></script>
   <script>
     (async function () {
       try {
@@ -29,7 +29,14 @@
           '<div class="meta" id="generated-at">--</div>' +
         "</div>" +
 
+        '<div id="action-banner"></div>' +
+
         '<div id="metrics" class="stat-grid"></div>' +
+
+        '<div id="pending-card" class="card action-card">' +
+          '<h2>Pending approvals</h2>' +
+          '<div id="pending-approvals"></div>' +
+        "</div>" +
 
         '<div class="card">' +
           '<h2>Runs by state</h2>' +
@@ -39,11 +46,6 @@
         '<div class="card">' +
           '<h2>Recent runs</h2>' +
           '<div id="recent-runs"></div>' +
-        "</div>" +
-
-        '<div class="card">' +
-          '<h2>Pending approvals</h2>' +
-          '<div id="pending-approvals"></div>' +
         "</div>" +
 
         '<div class="card">' +
@@ -112,21 +114,45 @@
             }).join("") + "</tbody></table></div>";
         }
 
-        // Pending approvals -- clickable to approval detail
+        // Pending approvals -- promoted to the top + action banner.
+        // The banner is a prominent CTA so the operator cannot miss that a
+        // human decision is blocking the run. The card below shows the
+        // subject inline so they can triage without clicking each row.
         const pending = dash.pending_approvals || [];
+        const bannerEl = document.getElementById("action-banner");
+        const pendingCard = document.getElementById("pending-card");
         if (pending.length === 0) {
-          ui.showEmpty("#pending-approvals", "No pending approvals");
+          bannerEl.innerHTML = "";
+          pendingCard.style.display = "none";
         } else {
+          pendingCard.style.display = "";
+          bannerEl.innerHTML =
+            '<div class="action-banner">' +
+              '<div class="action-banner-icon">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+              '</div>' +
+              '<div class="action-banner-text">' +
+                '<div class="action-banner-title">' + pending.length + ' approval' + (pending.length === 1 ? '' : 's') + ' waiting for your decision</div>' +
+                '<div class="action-banner-sub">The run is paused until you approve or reject the drafted email.</div>' +
+              '</div>' +
+              '<a class="btn primary" href="/ui/approvals.html">Review now &rarr;</a>' +
+            '</div>';
+
           document.getElementById("pending-approvals").innerHTML =
             '<div class="table-wrap"><table>' +
-            "<thead><tr><th>Run</th><th>Lead</th><th>State</th><th>Approval</th><th>Updated</th></tr></thead>" +
+            "<thead><tr><th>Gate</th><th>Subject / Summary</th><th>Recipient</th><th>Run</th><th>Updated</th><th></th></tr></thead>" +
             "<tbody>" + pending.map(function (r) {
+              var gate = r.gate || (r.state === "awaiting_approval" ? "Gate 2" : "Gate 1");
+              var gateCls = r.state === "awaiting_approval" ? "warning" : "info";
+              var subj = r.draft_subject || r.summary || '<span class="text-mute">—</span>';
+              var recip = r.draft_recipient || r.recipient || '<span class="text-mute">—</span>';
               return "<tr onclick=\"window.location.href='/ui/approvals.html?id=" + encodeURIComponent(r.pending_approval_id) + "'\">" +
+                "<td><span class='badge " + gateCls + "'>" + ui.escape(gate) + "</span></td>" +
+                "<td><strong>" + ui.escape(subj) + "</strong></td>" +
+                "<td><code>" + ui.escape(recip) + "</code></td>" +
                 "<td><code>" + ui.escape(r.run_id) + "</code></td>" +
-                "<td><code>" + ui.escape(r.lead_id) + "</code></td>" +
-                "<td>" + ui.stateBadge(r.state) + "</td>" +
-                "<td><code>" + ui.escape(r.pending_approval_id) + "</code></td>" +
                 "<td>" + ui.relativeTime(r.updated_at) + "</td>" +
+                "<td><a class='btn small primary' href='/ui/approvals.html?id=" + encodeURIComponent(r.pending_approval_id) + "'>Review &rarr;</a></td>" +
                 "</tr>";
             }).join("") + "</tbody></table></div>";
         }

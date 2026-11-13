@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OPSMESH -- Approval</title>
-  <link rel="stylesheet" href="/ui/css/app.css?v=7">
+  <link rel="stylesheet" href="/ui/css/app.css?v=8">
   <style>
     .email-preview {
       background: #fff;
@@ -88,8 +88,8 @@
 <body>
   <div id="root"></div>
 
-  <script src="/ui/js/app.js?v=7"></script>
-  <script src="/ui/js/shell.js?v=7"></script>
+  <script src="/ui/js/app.js?v=8"></script>
+  <script src="/ui/js/shell.js?v=8"></script>
   <script>
     (async function () {
       const ok = await OPSMESH.auth.requireAuth();
@@ -109,7 +109,8 @@
       async function renderList() {
         document.getElementById("root").innerHTML = OPSMESH.renderShell("approvals", "" +
           '<div class="page-header"><h1>Approvals</h1><div class="meta" id="count">--</div></div>' +
-          '<div class="card"><h2>Pending approvals</h2><div id="approvals-table"></div></div>'
+          '<div id="action-banner"></div>' +
+          '<div class="card action-card"><h2>Pending approvals</h2><div id="approvals-table"></div></div>'
         );
         OPSMESH.attachShellHandlers();
 
@@ -118,22 +119,45 @@
           const data = await api.get("/api/v1/approvals");
           const approvals = data.approvals || [];
           document.getElementById("count").textContent = approvals.length + " pending";
+
+          // Action banner: prominent CTA when there is at least one pending approval.
+          const bannerEl = document.getElementById("action-banner");
+          if (approvals.length === 0) {
+            bannerEl.innerHTML = "";
+          } else {
+            bannerEl.innerHTML =
+              '<div class="action-banner">' +
+                '<div class="action-banner-icon">' +
+                  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+                '</div>' +
+                '<div class="action-banner-text">' +
+                  '<div class="action-banner-title">' + approvals.length + ' approval' + (approvals.length === 1 ? '' : 's') + ' waiting for your decision</div>' +
+                  '<div class="action-banner-sub">Each row below is a drafted email or evidence review. Click Review to approve, reject, or request changes.</div>' +
+                '</div>' +
+              '</div>';
+          }
+
           if (approvals.length === 0) {
             ui.showEmpty("#approvals-table", "No pending approvals",
-              "Runs that pause at Gate 1 or Gate 2 will appear here.");
+              "Runs that pause at Gate 1 or Gate 2 will appear here. Create a lead to start a run.");
           } else {
             document.getElementById("approvals-table").innerHTML =
               '<div class="table-wrap"><table>' +
-              "<thead><tr><th>Approval</th><th>Run</th><th>Gate</th><th>Status</th><th>Created</th></tr></thead>" +
+              "<thead><tr><th>Gate</th><th>Subject / Summary</th><th>Recipient</th><th>Run</th><th>Created</th><th></th></tr></thead>" +
               "<tbody>" + approvals.map(function (a) {
+                var gate = a.kind === "email_send"
+                  ? '<span class="badge warning">Gate 2 — Email</span>'
+                  : '<span class="badge info">Gate 1 — Evidence</span>';
+                var subj = a.summary || '<span class="text-mute">—</span>';
+                var recip = a.recipient || '<span class="text-mute">—</span>';
                 return "<tr onclick=\"window.location.href='/ui/approvals.html?id=" + encodeURIComponent(a.id) + "'\">" +
-                  "<td><code>" + ui.escape(a.id) + "</code></td>" +
-                  "<td><a href=\"/ui/runs.html?id=" + encodeURIComponent(a.run_id) + '"><code>' + ui.escape(a.run_id) + "</code></a></td>" +
-                  "<td>" + (a.kind === "email_send"
-                    ? '<span class="badge warning">Gate 2: Email Send</span>'
-                    : '<span class="badge info">Gate 1: Evidence Review</span>') + "</td>" +
-                  "<td>" + statusBadge(a.status) + "</td>" +
-                  "<td>" + ui.relativeTime(a.created_at) + "</td></tr>";
+                  "<td>" + gate + "</td>" +
+                  "<td><strong>" + ui.escape(subj) + "</strong></td>" +
+                  "<td><code>" + ui.escape(recip) + "</code></td>" +
+                  "<td><a href=\"/ui/runs.html?id=" + encodeURIComponent(a.run_id) + '\" onclick=\"event.stopPropagation()\"><code>' + ui.escape(a.run_id) + "</code></a></td>" +
+                  "<td>" + ui.relativeTime(a.created_at) + "</td>" +
+                  "<td><a class='btn small primary' href='/ui/approvals.html?id=" + encodeURIComponent(a.id) + "' onclick='event.stopPropagation()'>Review &rarr;</a></td>" +
+                  "</tr>";
               }).join("") + "</tbody></table></div>";
           }
         } catch (e) {

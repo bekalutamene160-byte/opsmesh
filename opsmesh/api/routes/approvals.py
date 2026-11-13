@@ -84,6 +84,11 @@ class ApprovalResponse(BaseModel):
     decided_by: Optional[str] = None
     created_at: str
     expires_at: str
+    # Stage B hotfix: inline summary so the operator can see what each
+    # approval is FOR (email subject for Gate 2, research summary for Gate 1)
+    # without clicking into the detail page.
+    summary: Optional[str] = None
+    recipient: Optional[str] = None
 
 
 class DecisionResponse(BaseModel):
@@ -135,11 +140,35 @@ async def list_approvals(user: dict = Depends(get_current_user)):
             decided_by=record.decided_by,
             created_at=record.created_at.isoformat() if hasattr(record.created_at, 'isoformat') else str(record.created_at),
             expires_at=record.expires_at.isoformat() if hasattr(record.expires_at, 'isoformat') else str(record.expires_at),
+            # Stage B hotfix: extract subject + recipient from the payload so
+            # the list view shows what each approval is for inline.
+            summary=_extract_summary(record),
+            recipient=_extract_recipient(record),
         )
         for record in records
     ]
 
     return {"approvals": [a.model_dump() for a in pending]}
+
+
+def _extract_summary(record) -> Optional[str]:
+    """Pull a one-line summary out of the approval payload."""
+    payload = getattr(record, "payload", None)
+    if not isinstance(payload, dict):
+        return None
+    if record.kind.value == "email_send":
+        return payload.get("subject") or None
+    if record.kind.value == "evidence_review":
+        return payload.get("summary") or None
+    return None
+
+
+def _extract_recipient(record) -> Optional[str]:
+    """Pull the recipient out of the approval payload (Gate 2 only)."""
+    payload = getattr(record, "payload", None)
+    if not isinstance(payload, dict):
+        return None
+    return payload.get("to") or None
 
 
 @router.get("/approvals/{approval_id}")
@@ -166,6 +195,8 @@ async def get_approval(approval_id: str, user: dict = Depends(get_current_user))
         decided_by=record.decided_by,
         created_at=record.created_at.isoformat() if hasattr(record.created_at, 'isoformat') else str(record.created_at),
         expires_at=record.expires_at.isoformat() if hasattr(record.expires_at, 'isoformat') else str(record.expires_at),
+        summary=_extract_summary(record),
+        recipient=_extract_recipient(record),
     ).model_dump()
 
 

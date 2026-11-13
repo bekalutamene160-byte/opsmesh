@@ -885,3 +885,88 @@ table tr:hover td { background: var(--surface-2); }
   .sidebar .user { border-top: none; border-left: 1px solid var(--border); }
 }
 
+/* =========================================================================
+   Stage B hotfix: prominent approval visibility (nav badge + action banner)
+   ========================================================================= */
+
+.text-mute { color: var(--text-mute); }
+
+/* Nav badge: live pending-approval count on the Approvals nav item.
+   Visible from every page so the operator can't miss a waiting decision. */
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: auto;
+  border-radius: 9px;
+  background: var(--warning);
+  color: #1a1206;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  animation: nav-badge-pulse 2s ease-in-out infinite;
+}
+@keyframes nav-badge-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(251, 191, 36, 0); }
+}
+
+/* Action banner: full-width CTA shown at the top of the dashboard and the
+   approvals list when there is at least one pending human decision. */
+.action-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.12), rgba(251, 191, 36, 0.04));
+  box-shadow: 0 0 24px rgba(251, 191, 36, 0.12);
+}
+.action-banner-icon {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(251, 191, 36, 0.18);
+  color: var(--warning);
+}
+.action-banner-icon svg { width: 22px; height: 22px; }
+.action-banner-text { flex: 1 1 auto; min-width: 0; }
+.action-banner-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.action-banner-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.action-banner .btn.primary {
+  flex: 0 0 auto;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Action card: the pending-approvals card gets an amber left border so it
+   reads as "needs attention" even without the banner. */
+.action-card {
+  border-left: 3px solid var(--warning);
+}
+
+/* Small inline button used in table rows. */
+.btn.small.primary {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+

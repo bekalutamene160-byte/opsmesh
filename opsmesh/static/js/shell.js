@@ -33,8 +33,12 @@
     const nav = NAV_ITEMS.map(function (item) {
       const cls = item.id === activePageId ? "active" : "";
       const icon = ICONS[item.id] || "";
+      // Approvals nav item gets a live pending-count badge.
+      const badge = item.id === "approvals"
+        ? '<span class="nav-badge" id="nav-approvals-badge" style="display:none;">0</span>'
+        : "";
       return '<a href="' + item.href + '" class="' + cls + '" data-nav="' + item.id + '">'
-        + icon + '<span>' + item.label + "</span></a>";
+        + icon + '<span>' + item.label + "</span>" + badge + "</a>";
     }).join("");
 
     // Stage B Phase 5: in demo mode there is no sign-out (no session). Show a
@@ -76,6 +80,29 @@
         }
       });
     }
+    // Start polling the pending-approvals count for the nav badge.
+    refreshApprovalsBadge();
+    if (!global._opsmeshBadgeTimer) {
+      global._opsmeshBadgeTimer = setInterval(refreshApprovalsBadge, 8000);
+    }
+  }
+
+  // Fetch pending approval count and update the nav badge. Called on shell
+  // attach + every 8s. Best-effort: silently ignores errors.
+  function refreshApprovalsBadge() {
+    if (!global.OPSMESH || !global.OPSMESH.api) return;
+    global.OPSMESH.api.get("/api/v1/approvals").then(function (data) {
+      const count = (data && data.approvals) ? data.approvals.length : 0;
+      const el = document.getElementById("nav-approvals-badge");
+      if (!el) return;
+      if (count > 0) {
+        el.textContent = count;
+        el.style.display = "inline-flex";
+        el.setAttribute("title", count + " approval" + (count === 1 ? "" : "s") + " waiting for your decision");
+      } else {
+        el.style.display = "none";
+      }
+    }).catch(function () { /* best-effort */ });
   }
 
   global.OPSMESH = global.OPSMESH || {};
